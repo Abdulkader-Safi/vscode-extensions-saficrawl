@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@theme {
+    --color-sc-bg: var(--vscode-editor-background, #0b0d10);
+    --color-sc-bg-soft: var(--vscode-sideBar-background, #121418);
+    --color-sc-bg-raised: var(--vscode-editorWidget-background, #171a1f);
+    --color-sc-border: var(--vscode-editorWidget-border, #262a33);
+    --color-sc-text: var(--vscode-foreground, #e5e7eb);
+    --color-sc-text-dim: var(--vscode-descriptionForeground, #9ca3af);
+    --color-sc-text-faint: var(--vscode-disabledForeground, #6b7280);
+    --color-sc-accent: #10b981;
+    --color-sc-accent-hover: #059669;
+    --color-sc-ok: #34d399;
+    --color-sc-warn: #fbbf24;
+    --color-sc-err: #f87171;
+    --color-sc-info: #38bdf8;
+    --color-sc-purple: #c084fc;
+}
+
+html,
+body,
+#root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: var(--color-sc-bg);
+    color: var(--color-sc-text);
+    font-family: var(
+        --vscode-font-family,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Roboto,
+        sans-serif
+    );
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+*::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+    background: var(--vscode-scrollbarSlider-background, #3f3f46);
+    border-radius: 5px;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: var(--vscode-scrollbarSlider-hoverBackground, #52525b);
+}
+
+/* Status code text utility classes used across tables. */
+.sc-status-2xx {
+    color: var(--color-sc-ok);
+}
+.sc-status-3xx {
+    color: var(--color-sc-warn);
+}
+.sc-status-4xx {
+    color: var(--color-sc-err);
+}
+.sc-status-5xx {
+    color: var(--color-sc-purple);
+}
+.sc-status-none {
+    color: var(--color-sc-text-faint);
+}
