@@ -30,6 +30,10 @@
     "onCommand:SafiCrawl.load",
     "onCommand:SafiCrawl.settings",
     "onCommand:SafiCrawl.installBrowsers",
+    "onCommand:SafiCrawl.checkPlaywright",
+    "onCommand:SafiCrawl.openPlaywrightDocs",
+    "onCommand:SafiCrawl.setPageSpeedKey",
+    "onCommand:SafiCrawl.clearPageSpeedKey",
     "onView:saficrawl.sidebar"
   ],
   "main": "./dist/extension.js",
@@ -56,11 +60,11 @@
       },
       {
         "command": "SafiCrawl.export",
-        "title": "SafiCrawl: Export Results\u2026"
+        "title": "SafiCrawl: Export Results…"
       },
       {
         "command": "SafiCrawl.load",
-        "title": "SafiCrawl: Load Saved Crawl\u2026"
+        "title": "SafiCrawl: Load Saved Crawl…"
       },
       {
         "command": "SafiCrawl.settings",
@@ -69,6 +73,22 @@
       {
         "command": "SafiCrawl.installBrowsers",
         "title": "SafiCrawl: Install Playwright Browsers"
+      },
+      {
+        "command": "SafiCrawl.checkPlaywright",
+        "title": "SafiCrawl: Check Playwright Install"
+      },
+      {
+        "command": "SafiCrawl.openPlaywrightDocs",
+        "title": "SafiCrawl: Open Playwright Install Instructions"
+      },
+      {
+        "command": "SafiCrawl.setPageSpeedKey",
+        "title": "SafiCrawl: Set PageSpeed API Key…"
+      },
+      {
+        "command": "SafiCrawl.clearPageSpeedKey",
+        "title": "SafiCrawl: Clear PageSpeed API Key"
       }
     ],
     "viewsContainers": {
@@ -122,7 +142,7 @@
         },
         "SafiCrawl.crawler.delay": {
           "type": "number",
-          "default": 1.0,
+          "default": 1,
           "minimum": 0,
           "maximum": 60,
           "description": "Delay between requests in seconds."
@@ -214,6 +234,11 @@
           "default": 30,
           "minimum": 5,
           "maximum": 120
+        },
+        "SafiCrawl.javascript.playwrightPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute path to a Playwright install. Leave empty to auto-detect from the workspace or global npm root."
         },
         "SafiCrawl.filters.includeExtensions": {
           "type": "array",
@@ -345,8 +370,5 @@
     "undici": "^6.21.0",
     "vis-network": "^9.1.9",
     "zustand": "^5.0.2"
-  },
-  "optionalDependencies": {
-    "playwright": "^1.49.0"
   }
 }

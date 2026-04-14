@@ -35,6 +35,14 @@ export interface CrawlerConfig {
   proxy: string;
   customHeaders: Record<string, string>;
   excludePatterns: string[];
+  jsEnabled: boolean;
+  jsBrowser: "chromium" | "firefox" | "webkit";
+  jsViewportWidth: number;
+  jsViewportHeight: number;
+  jsConcurrency: number;
+  jsWaitSec: number;
+  jsTimeoutSec: number;
+  jsPlaywrightPath: string;
 }
 
 export const DEFAULT_CONFIG: CrawlerConfig = {
@@ -51,12 +59,30 @@ export const DEFAULT_CONFIG: CrawlerConfig = {
   respectRobots: true,
   acceptLanguage: "en-US,en;q=0.9",
   includeExtensions: [],
-  excludeExtensions: [".pdf", ".zip", ".mp4", ".jpg", ".png", ".gif", ".svg", ".css", ".js"],
+  excludeExtensions: [
+    ".pdf",
+    ".zip",
+    ".mp4",
+    ".jpg",
+    ".png",
+    ".gif",
+    ".svg",
+    ".css",
+    ".js",
+  ],
   urlRegex: "",
   maxFileSizeMB: 10,
   proxy: "",
   customHeaders: {},
   excludePatterns: [],
+  jsEnabled: false,
+  jsBrowser: "chromium",
+  jsViewportWidth: 1920,
+  jsViewportHeight: 1080,
+  jsConcurrency: 3,
+  jsWaitSec: 3,
+  jsTimeoutSec: 30,
+  jsPlaywrightPath: "",
 };
 
 export interface Link {

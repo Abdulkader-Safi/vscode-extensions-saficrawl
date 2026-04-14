@@ -4,9 +4,20 @@ import { HttpClient } from "./httpClient";
 import { RateLimiter } from "./rateLimiter";
 import { parsePage } from "./seoExtractor";
 import { extractLinks, SourcePageIndex } from "./linkManager";
-import { detect, DEFAULT_THRESHOLDS, type IssueThresholds } from "./issueDetector";
+import {
+  detect,
+  DEFAULT_THRESHOLDS,
+  type IssueThresholds,
+} from "./issueDetector";
 import { discover as discoverSitemaps } from "./sitemapParser";
-import { extractDomain, normalizeUrl, shouldCrawl, type FilterContext } from "./urlFilter";
+import {
+  extractDomain,
+  normalizeUrl,
+  shouldCrawl,
+  type FilterContext,
+} from "./urlFilter";
+import type { JsRenderer } from "./jsRenderer";
+import { shouldRender } from "./jsRenderer";
 import type { CrawlResult, CrawlStatsSnapshot, CrawlerConfig } from "./types";
 
 type RobotsMatcher = ReturnType<typeof robotsParser>;
@@ -17,6 +28,7 @@ export interface CrawlerOptions {
   config: CrawlerConfig;
   thresholds?: IssueThresholds;
   statsIntervalMs?: number;
+  jsRenderer?: JsRenderer | null;
 }
 
 export class Crawler extends CrawlerEvents {
@@ -27,6 +39,7 @@ export class Crawler extends CrawlerEvents {
   private http: HttpClient | null = null;
   private rateLimiter: RateLimiter | null = null;
   private robots: RobotsMatcher | null = null;
+  private readonly jsRenderer: JsRenderer | null;
 
   private readonly queue: Array<[string, number]> = [];
   private readonly visited = new Set<string>();
@@ -51,6 +64,7 @@ export class Crawler extends CrawlerEvents {
     this.config = options.config;
     this.thresholds = options.thresholds ?? DEFAULT_THRESHOLDS;
     this.statsIntervalMs = options.statsIntervalMs ?? 250;
+    this.jsRenderer = options.jsRenderer ?? null;
   }
 
   getStatus(): CrawlStatus {
@@ -59,7 +73,9 @@ export class Crawler extends CrawlerEvents {
 
   updateConfig(patch: Partial<CrawlerConfig>): void {
     this.config = { ...this.config, ...patch };
-    if (patch.delaySec !== undefined) {this.rateLimiter?.updateRate(patch.delaySec);}
+    if (patch.delaySec !== undefined) {
+      this.rateLimiter?.updateRate(patch.delaySec);
+    }
   }
 
   async start(seedUrl: string): Promise<void> {
@@ -67,7 +83,9 @@ export class Crawler extends CrawlerEvents {
       throw new Error("Crawler already running");
     }
     const seed = normalizeUrl(seedUrl);
-    if (!seed) {throw new Error(`Invalid seed URL: ${seedUrl}`);}
+    if (!seed) {
+      throw new Error(`Invalid seed URL: ${seedUrl}`);
+    }
 
     this.reset();
     this.baseUrl = seed;
@@ -82,7 +100,9 @@ export class Crawler extends CrawlerEvents {
     if (this.config.discoverSitemaps) {
       try {
         const sm = await discoverSitemaps(seed, this.http);
-        for (const u of sm.urls) {this.enqueue(u, 0);}
+        for (const u of sm.urls) {
+          this.enqueue(u, 0);
+        }
       } catch {
         // non-fatal
       }
@@ -107,14 +127,18 @@ export class Crawler extends CrawlerEvents {
   }
 
   stop(): void {
-    if (this.status !== "running" && this.status !== "paused") {return;}
+    if (this.status !== "running" && this.status !== "paused") {
+      return;
+    }
     this.stopSignal = true;
     this.status = "stopping";
     this.resumeInternal();
   }
 
   pause(): void {
-    if (this.status !== "running") {return;}
+    if (this.status !== "running") {
+      return;
+    }
     this.status = "paused";
     this.pausePromise = new Promise((resolve) => {
       this.pauseResolve = resolve;
@@ -122,7 +146,9 @@ export class Crawler extends CrawlerEvents {
   }
 
   resume(): void {
-    if (this.status !== "paused") {return;}
+    if (this.status !== "paused") {
+      return;
+    }
     this.status = "running";
     this.resumeInternal();
   }
@@ -143,14 +169,25 @@ export class Crawler extends CrawlerEvents {
   }
 
   private enqueue(url: string, depth: number): void {
-    if (this.visited.has(url)) {return;}
-    if (depth > this.config.maxDepth) {return;}
-    if (this.filterContext() && !shouldCrawl(url, depth, this.filterContext()!)) {return;}
+    if (this.visited.has(url)) {
+      return;
+    }
+    if (depth > this.config.maxDepth) {
+      return;
+    }
+    if (
+      this.filterContext() &&
+      !shouldCrawl(url, depth, this.filterContext()!)
+    ) {
+      return;
+    }
     this.queue.push([url, depth]);
   }
 
   private filterContext(): FilterContext | null {
-    if (!this.robots) {return null;}
+    if (!this.robots) {
+      return null;
+    }
     const robots = this.robots;
     return {
       config: this.config,
@@ -164,7 +201,9 @@ export class Crawler extends CrawlerEvents {
       if (this.status === "paused" && this.pausePromise) {
         await this.pausePromise;
       }
-      if (this.crawledCount >= this.config.maxUrls) {break;}
+      if (this.crawledCount >= this.config.maxUrls) {
+        break;
+      }
 
       while (
         !this.stopSignal &&
@@ -173,9 +212,13 @@ export class Crawler extends CrawlerEvents {
         this.crawledCount + this.active < this.config.maxUrls
       ) {
         const next = this.queue.shift();
-        if (!next) {break;}
+        if (!next) {
+          break;
+        }
         const [url, depth] = next;
-        if (this.visited.has(url)) {continue;}
+        if (this.visited.has(url)) {
+          continue;
+        }
         this.visited.add(url);
         this.active++;
         void this.fetchOne(url, depth).finally(() => {
@@ -184,17 +227,37 @@ export class Crawler extends CrawlerEvents {
       }
       await wait(5);
     }
-    while (this.active > 0) {await wait(10);}
+    while (this.active > 0) {
+      await wait(10);
+    }
   }
 
   private async fetchOne(url: string, depth: number): Promise<void> {
-    if (!this.http || !this.rateLimiter) {return;}
+    if (!this.http || !this.rateLimiter) {
+      return;
+    }
     await this.rateLimiter.acquire();
     try {
       const res = await this.http.get(url);
       const contentType = res.headers["content-type"] ?? null;
-      const isHtml = contentType === null || /text\/html|application\/xhtml/i.test(contentType);
-      const html = isHtml ? res.body.toString("utf8") : "";
+      const isHtml =
+        contentType === null ||
+        /text\/html|application\/xhtml/i.test(contentType);
+      let html = isHtml ? res.body.toString("utf8") : "";
+      let size = res.body.length;
+      let javascriptRendered = false;
+      let renderMs = 0;
+
+      if (isHtml && this.jsRenderer && shouldRender(url)) {
+        const started = Date.now();
+        const rendered = await this.jsRenderer.render(res.finalUrl);
+        renderMs = Date.now() - started;
+        if (!rendered.error && rendered.html) {
+          html = rendered.html;
+          size = Buffer.byteLength(rendered.html, "utf8");
+          javascriptRendered = true;
+        }
+      }
 
       const result = parsePage({
         url,
@@ -202,12 +265,13 @@ export class Crawler extends CrawlerEvents {
         finalUrl: res.finalUrl,
         statusCode: res.statusCode,
         contentType,
-        size: res.body.length,
-        responseTimeMs: res.responseTimeMs,
+        size,
+        responseTimeMs: res.responseTimeMs + renderMs,
         redirectChain: res.redirectChain,
         headers: res.headers,
         html,
       });
+      result.javascriptRendered = javascriptRendered;
 
       this.crawledCount++;
       this.emit("url:crawled", result);
@@ -221,7 +285,9 @@ export class Crawler extends CrawlerEvents {
         for (const link of links) {
           this.sources.add(link.targetUrl, url);
           this.emit("link:found", link);
-          if (link.isInternal) {this.enqueue(link.targetUrl, depth + 1);}
+          if (link.isInternal) {
+            this.enqueue(link.targetUrl, depth + 1);
+          }
         }
       }
     } catch (err) {
@@ -258,7 +324,8 @@ export class Crawler extends CrawlerEvents {
 
   private snapshot(): CrawlStatsSnapshot {
     const elapsedMs = this.startedAt === 0 ? 0 : Date.now() - this.startedAt;
-    const urlsPerSec = elapsedMs > 0 ? (this.crawledCount / (elapsedMs / 1000)) : 0;
+    const urlsPerSec =
+      elapsedMs > 0 ? this.crawledCount / (elapsedMs / 1000) : 0;
     return {
       crawled: this.crawledCount,
       queued: this.queue.length,
@@ -280,7 +347,9 @@ function wait(ms: number): Promise<void> {
 }
 
 function errorMessage(err: unknown): string {
-  if (err instanceof Error) {return err.message;}
+  if (err instanceof Error) {
+    return err.message;
+  }
   return String(err);
 }
 

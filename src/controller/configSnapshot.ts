@@ -58,7 +58,46 @@ export function readConfig(cfg: WorkspaceConfiguration): CrawlerConfig {
       DEFAULT_CONFIG.customHeaders,
     ),
     excludePatterns: DEFAULT_CONFIG.excludePatterns,
+    jsEnabled: bool(cfg, "javascript.enabled", DEFAULT_CONFIG.jsEnabled),
+    jsBrowser: enumStr(
+      cfg,
+      "javascript.browser",
+      ["chromium", "firefox", "webkit"],
+      DEFAULT_CONFIG.jsBrowser,
+    ) as CrawlerConfig["jsBrowser"],
+    jsViewportWidth: num(
+      cfg,
+      "javascript.viewportWidth",
+      DEFAULT_CONFIG.jsViewportWidth,
+    ),
+    jsViewportHeight: num(
+      cfg,
+      "javascript.viewportHeight",
+      DEFAULT_CONFIG.jsViewportHeight,
+    ),
+    jsConcurrency: num(
+      cfg,
+      "javascript.concurrency",
+      DEFAULT_CONFIG.jsConcurrency,
+    ),
+    jsWaitSec: num(cfg, "javascript.waitTime", DEFAULT_CONFIG.jsWaitSec),
+    jsTimeoutSec: num(cfg, "javascript.timeout", DEFAULT_CONFIG.jsTimeoutSec),
+    jsPlaywrightPath: str(
+      cfg,
+      "javascript.playwrightPath",
+      DEFAULT_CONFIG.jsPlaywrightPath,
+    ),
   };
+}
+
+function enumStr(
+  cfg: WorkspaceConfiguration,
+  key: string,
+  allowed: string[],
+  d: string,
+): string {
+  const v = cfg.get<string>(key);
+  return typeof v === "string" && allowed.includes(v) ? v : d;
 }
 
 const HOT_KEYS = new Set<keyof CrawlerConfig>(["delaySec"]);
@@ -71,9 +110,11 @@ export function hotApplicablePatch(
   const deferred: Array<keyof CrawlerConfig> = [];
   for (const key of Object.keys(newCfg) as Array<keyof CrawlerConfig>) {
     if (!deepEq(oldCfg[key], newCfg[key])) {
-      if (HOT_KEYS.has(key))
-        {(hot as Record<string, unknown>)[key] = newCfg[key];}
-      else {deferred.push(key);}
+      if (HOT_KEYS.has(key)) {
+        (hot as Record<string, unknown>)[key] = newCfg[key];
+      } else {
+        deferred.push(key);
+      }
     }
   }
   return { hot, deferred };
@@ -105,16 +146,24 @@ function obj(
 }
 
 function deepEq(a: unknown, b: unknown): boolean {
-  if (a === b) {return true;}
-  if (typeof a !== typeof b) {return false;}
+  if (a === b) {
+    return true;
+  }
+  if (typeof a !== typeof b) {
+    return false;
+  }
   if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) {return false;}
+    if (a.length !== b.length) {
+      return false;
+    }
     return a.every((x, i) => deepEq(x, b[i]));
   }
   if (a && b && typeof a === "object" && typeof b === "object") {
     const ka = Object.keys(a as object);
     const kb = Object.keys(b as object);
-    if (ka.length !== kb.length) {return false;}
+    if (ka.length !== kb.length) {
+      return false;
+    }
     return ka.every((k) =>
       deepEq(
         (a as Record<string, unknown>)[k],

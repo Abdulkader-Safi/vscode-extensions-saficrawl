@@ -3,7 +3,11 @@ import { SafiCrawlPanel } from "./WebviewProvider";
 import { StatusBar } from "./ui/statusBar";
 import { SavedCrawlsProvider } from "./ui/sidebar";
 import { CrawlController } from "./controller/CrawlController";
+import { detectPlaywright } from "./engine/playwrightLoader";
 import type { WebviewToHost } from "./types/messages";
+
+const PSI_SECRET_KEY = "saficrawl.pagespeed.apiKey";
+const PLAYWRIGHT_DOCS_URL = "https://playwright.dev/docs/intro";
 
 export function activate(context: vscode.ExtensionContext): void {
   const statusBar = new StatusBar();
@@ -13,6 +17,7 @@ export function activate(context: vscode.ExtensionContext): void {
     () => SafiCrawlPanel.current?.bus ?? null,
     statusBar,
     () => vscode.workspace.getConfiguration("SafiCrawl"),
+    async () => context.secrets.get(PSI_SECRET_KEY),
   );
 
   context.subscriptions.push(
@@ -24,7 +29,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const handleWebviewMessage = async (msg: WebviewToHost): Promise<void> => {
     switch (msg.type) {
       case "ready":
-        pushEnvironment();
+        await pushEnvironment();
         pushSettings();
         controller.replay();
         break;
@@ -50,13 +55,27 @@ export function activate(context: vscode.ExtensionContext): void {
       case "crawl:pauseResume":
         controller.pauseResume();
         break;
+      case "checkPlaywright":
+        await pushEnvironment();
+        break;
+      case "openPlaywrightDocs":
+        await vscode.commands.executeCommand("SafiCrawl.openPlaywrightDocs");
+        break;
+      case "setPageSpeedKey":
+        await vscode.commands.executeCommand("SafiCrawl.setPageSpeedKey");
+        break;
+      case "clearPageSpeedKey":
+        await vscode.commands.executeCommand("SafiCrawl.clearPageSpeedKey");
+        break;
+      case "installBrowsers":
+        await vscode.commands.executeCommand("SafiCrawl.installBrowsers");
+        break;
       case "crawl:load":
       case "crawl:resume":
       case "crawl:archive":
       case "crawl:delete":
       case "export":
       case "saved:refresh":
-      case "installBrowsers":
         notify("info", `"${msg.type}" will be wired in a later milestone.`);
         break;
     }
@@ -65,14 +84,19 @@ export function activate(context: vscode.ExtensionContext): void {
   const openPanel = () =>
     SafiCrawlPanel.createOrShow(context.extensionUri, handleWebviewMessage);
 
-  const pushEnvironment = () => {
+  const pushEnvironment = async () => {
+    const cfg = vscode.workspace.getConfiguration("SafiCrawl");
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const configuredPath =
+      cfg.get<string>("javascript.playwrightPath") || undefined;
+    const detection = detectPlaywright({ workspacePath, configuredPath });
+    const key = await context.secrets.get(PSI_SECRET_KEY);
     SafiCrawlPanel.current?.bus.post({
       type: "environment",
       isWebVsCode: vscode.env.uiKind === vscode.UIKind.Web,
-      playwrightInstalled: context.globalState.get<boolean>(
-        "playwright.installed",
-        false,
-      ),
+      playwrightInstalled: Boolean(detection.playwright),
+      playwrightPath: detection.resolvedFrom,
+      pageSpeedKeyConfigured: Boolean(key),
     });
   };
 
@@ -119,9 +143,97 @@ export function activate(context: vscode.ExtensionContext): void {
         "@ext:abdulkadersafi.saficrawl",
       ),
     ),
-    vscode.commands.registerCommand("SafiCrawl.installBrowsers", () =>
-      notify("info", "Install Playwright Browsers: wired in M4."),
+    vscode.commands.registerCommand("SafiCrawl.installBrowsers", async () => {
+      const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      const configuredPath =
+        vscode.workspace
+          .getConfiguration("SafiCrawl")
+          .get<string>("javascript.playwrightPath") || undefined;
+      const detection = detectPlaywright({ workspacePath, configuredPath });
+      if (!detection.playwright) {
+        const pick = await vscode.window.showWarningMessage(
+          "SafiCrawl: Playwright is not installed. Open the install instructions?",
+          "Open Install Instructions",
+          "Cancel",
+        );
+        if (pick === "Open Install Instructions") {
+          await vscode.env.openExternal(vscode.Uri.parse(PLAYWRIGHT_DOCS_URL));
+        }
+        return;
+      }
+      const browser =
+        vscode.workspace
+          .getConfiguration("SafiCrawl")
+          .get<string>("javascript.browser") ?? "chromium";
+      const task = new vscode.Task(
+        { type: "saficrawl", task: "install-browsers" },
+        vscode.TaskScope.Workspace,
+        `Install Playwright browser (${browser})`,
+        "SafiCrawl",
+        new vscode.ShellExecution("npx", ["playwright", "install", browser], {
+          cwd: detection.resolvedFrom
+            ? require("path").dirname(detection.resolvedFrom)
+            : undefined,
+        }),
+      );
+      const execution = await vscode.tasks.executeTask(task);
+      const disposable = vscode.tasks.onDidEndTaskProcess((e) => {
+        if (e.execution === execution) {
+          if (e.exitCode === 0) {
+            void context.globalState.update("playwright.installed", true);
+            void pushEnvironment();
+            notify("info", "Playwright browser installed.");
+          } else {
+            notify(
+              "error",
+              `Playwright install failed with code ${e.exitCode}.`,
+            );
+          }
+          disposable.dispose();
+        }
+      });
+      context.subscriptions.push(disposable);
+    }),
+    vscode.commands.registerCommand("SafiCrawl.checkPlaywright", async () => {
+      await pushEnvironment();
+      const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      const configuredPath =
+        vscode.workspace
+          .getConfiguration("SafiCrawl")
+          .get<string>("javascript.playwrightPath") || undefined;
+      const detection = detectPlaywright({ workspacePath, configuredPath });
+      if (detection.playwright) {
+        notify("info", `Playwright detected at ${detection.resolvedFrom}.`);
+      } else {
+        notify(
+          "warn",
+          `Playwright not found. Tried: ${detection.attemptedPaths.join(", ") || "(nothing)"}`,
+        );
+      }
+    }),
+    vscode.commands.registerCommand(
+      "SafiCrawl.openPlaywrightDocs",
+      async () => {
+        await vscode.env.openExternal(vscode.Uri.parse(PLAYWRIGHT_DOCS_URL));
+      },
     ),
+    vscode.commands.registerCommand("SafiCrawl.setPageSpeedKey", async () => {
+      const key = await vscode.window.showInputBox({
+        prompt: "Google PageSpeed Insights API key",
+        placeHolder: "AIza\u2026",
+        password: true,
+        ignoreFocusOut: true,
+      });
+      if (!key) {return;}
+      await context.secrets.store(PSI_SECRET_KEY, key.trim());
+      await pushEnvironment();
+      notify("info", "PageSpeed API key saved.");
+    }),
+    vscode.commands.registerCommand("SafiCrawl.clearPageSpeedKey", async () => {
+      await context.secrets.delete(PSI_SECRET_KEY);
+      await pushEnvironment();
+      notify("info", "PageSpeed API key cleared.");
+    }),
   );
 
   context.subscriptions.push(
@@ -186,6 +298,7 @@ function configToPlain(
     "javascript.concurrency",
     "javascript.waitTime",
     "javascript.timeout",
+    "javascript.playwrightPath",
     "filters.includeExtensions",
     "filters.excludeExtensions",
     "filters.urlRegex",

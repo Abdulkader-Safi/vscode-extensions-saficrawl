@@ -1,4 +1,10 @@
-export type CrawlStatus = "idle" | "running" | "paused" | "stopping" | "completed" | "error";
+export type CrawlStatus =
+  | "idle"
+  | "running"
+  | "paused"
+  | "stopping"
+  | "completed"
+  | "error";
 
 export interface CrawlStats {
   crawled: number;
@@ -48,6 +54,19 @@ export interface SavedCrawl {
   canResume: boolean;
 }
 
+export interface CwvMessageRow {
+  url: string;
+  strategy: "mobile" | "desktop";
+  performance: number | null;
+  lcpMs: number | null;
+  clsScore: number | null;
+  fcpMs: number | null;
+  inpMs: number | null;
+  ttfbMs: number | null;
+  tbtMs: number | null;
+  error: string | null;
+}
+
 /** Messages sent FROM the extension host TO the webview. */
 export type HostToWebview =
   | { type: "stats:tick"; stats: CrawlStats }
@@ -59,7 +78,15 @@ export type HostToWebview =
   | { type: "crawl:error"; message: string }
   | { type: "settings:loaded"; settings: Record<string, unknown> }
   | { type: "saved:list"; crawls: SavedCrawl[] }
-  | { type: "environment"; isWebVsCode: boolean; playwrightInstalled: boolean };
+  | {
+      type: "environment";
+      isWebVsCode: boolean;
+      playwrightInstalled: boolean;
+      playwrightPath: string | null;
+      pageSpeedKeyConfigured: boolean;
+    }
+  | { type: "pagespeed:batch"; rows: CwvMessageRow[] }
+  | { type: "pagespeed:done"; analyzed: number; skipped: number };
 
 /** Messages sent FROM the webview TO the extension host. */
 export type WebviewToHost =
@@ -74,8 +101,16 @@ export type WebviewToHost =
   | { type: "settings:get" }
   | { type: "settings:update"; patch: Record<string, unknown> }
   | { type: "saved:refresh" }
-  | { type: "export"; dataset: "urls" | "links" | "issues"; format: "csv" | "json" | "xml" }
+  | {
+      type: "export";
+      dataset: "urls" | "links" | "issues";
+      format: "csv" | "json" | "xml";
+    }
   | { type: "installBrowsers" }
+  | { type: "checkPlaywright" }
+  | { type: "openPlaywrightDocs" }
+  | { type: "setPageSpeedKey" }
+  | { type: "clearPageSpeedKey" }
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
 
 export type Message = HostToWebview | WebviewToHost;

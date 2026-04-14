@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import { Crawler } from "../engine/crawler";
+import { JsRenderer } from "../engine/jsRenderer";
+import { detectPlaywright } from "../engine/playwrightLoader";
 import type {
   CrawlResult,
   CrawlStatsSnapshot,
@@ -19,6 +21,8 @@ import type {
 import type { StatusBar } from "../ui/statusBar";
 import { RingBuffer } from "./buffers";
 import { hotApplicablePatch, readConfig } from "./configSnapshot";
+import { runBatch } from "../pagespeed/psiClient";
+import type { CwvRow, PsiStrategy } from "../pagespeed/types";
 
 const URL_BUF_CAP = 10_000;
 const LINK_BUF_CAP = 50_000;
@@ -28,6 +32,7 @@ const BATCH_INTERVAL_MS = 100;
 const WEBVIEW_STATS_INTERVAL_MS = 250;
 
 type BusGetter = () => HostBus | null;
+type PsiKeyGetter = () => Promise<string | undefined>;
 
 export class CrawlController {
   private crawler: Crawler | null = null;
@@ -47,13 +52,22 @@ export class CrawlController {
   private lastStats: CrawlStats = makeIdleStats();
   private lastWebviewStatsAt = 0;
   private flushTimer: NodeJS.Timeout | null = null;
+  private jsRenderer: JsRenderer | null = null;
+
+  private psiAbort = { aborted: false };
+  private pagespeedRows: CwvRow[] = [];
 
   constructor(
     private readonly getBus: BusGetter,
     private readonly statusBar: StatusBar,
     private readonly getWsConfig: () => vscode.WorkspaceConfiguration,
+    private readonly getPsiKey: PsiKeyGetter = async () => undefined,
   ) {
     this.config = readConfig(this.getWsConfig());
+  }
+
+  getPagespeedSnapshot(): CwvRow[] {
+    return this.pagespeedRows.slice();
   }
 
   getStats(): CrawlStats {
@@ -67,19 +81,28 @@ export class CrawlController {
   /** Replay current state to the webview — called when the panel opens mid-crawl. */
   replay(): void {
     const bus = this.getBus();
-    if (!bus) {return;}
-    if (this.baseUrl)
-      {bus.post({
+    if (!bus) {
+      return;
+    }
+    if (this.baseUrl) {
+      bus.post({
         type: "crawl:started",
         baseUrl: this.baseUrl,
         crawlId: this.crawlId,
-      });}
+      });
+    }
     const urls = this.urlBuf.snapshot();
-    if (urls.length) {bus.post({ type: "url:batch", rows: urls });}
+    if (urls.length) {
+      bus.post({ type: "url:batch", rows: urls });
+    }
     const issues = this.issueBuf.snapshot();
-    if (issues.length) {bus.post({ type: "issue:batch", rows: issues });}
+    if (issues.length) {
+      bus.post({ type: "issue:batch", rows: issues });
+    }
     const links = this.linkBuf.snapshot();
-    if (links.length) {bus.post({ type: "link:batch", rows: links });}
+    if (links.length) {
+      bus.post({ type: "link:batch", rows: links });
+    }
     bus.post({ type: "stats:tick", stats: this.lastStats });
   }
 
@@ -96,7 +119,12 @@ export class CrawlController {
     this.baseUrl = seedUrl;
     this.crawlId = null;
 
-    const crawler = new Crawler({ config: this.config });
+    this.jsRenderer = await this.tryCreateRenderer();
+
+    const crawler = new Crawler({
+      config: this.config,
+      jsRenderer: this.jsRenderer,
+    });
     this.crawler = crawler;
     this.bindCrawler(crawler);
 
@@ -107,11 +135,70 @@ export class CrawlController {
     });
     this.startFlushTimer();
 
-    // Fire-and-forget: the crawler resolves start() when done or errored.
-    crawler.start(seedUrl).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.getBus()?.post({ type: "crawl:error", message: msg });
+    crawler
+      .start(seedUrl)
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.getBus()?.post({ type: "crawl:error", message: msg });
+      })
+      .finally(() => {
+        void this.closeRenderer();
+      });
+  }
+
+  private async tryCreateRenderer(): Promise<JsRenderer | null> {
+    if (!this.config.jsEnabled) {return null;}
+    if (vscode.env.uiKind === vscode.UIKind.Web) {
+      void vscode.window.showWarningMessage(
+        "SafiCrawl: JavaScript rendering requires the desktop VS Code. Disabled for this session.",
+      );
+      return null;
+    }
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const detection = detectPlaywright({
+      workspacePath,
+      configuredPath: this.config.jsPlaywrightPath || undefined,
     });
+    if (!detection.playwright) {
+      void vscode.window
+        .showWarningMessage(
+          "SafiCrawl: Playwright is not installed. JS rendering disabled for this crawl.",
+          "Open Install Instructions",
+        )
+        .then((pick) => {
+          if (pick)
+            {void vscode.commands.executeCommand("SafiCrawl.openPlaywrightDocs");}
+        });
+      return null;
+    }
+    try {
+      return await JsRenderer.create(detection.playwright, {
+        browser: this.config.jsBrowser,
+        concurrency: this.config.jsConcurrency,
+        viewportWidth: this.config.jsViewportWidth,
+        viewportHeight: this.config.jsViewportHeight,
+        waitSec: this.config.jsWaitSec,
+        timeoutSec: this.config.jsTimeoutSec,
+        userAgent: this.config.userAgent,
+      });
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `SafiCrawl: Failed to start Playwright (${err instanceof Error ? err.message : String(err)}). Run "Install Playwright Browsers".`,
+      );
+      return null;
+    }
+  }
+
+  private async closeRenderer(): Promise<void> {
+    const r = this.jsRenderer;
+    this.jsRenderer = null;
+    if (r) {
+      try {
+        await r.close();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   stop(): void {
@@ -119,10 +206,15 @@ export class CrawlController {
   }
 
   pauseResume(): void {
-    if (!this.crawler) {return;}
+    if (!this.crawler) {
+      return;
+    }
     const status = this.crawler.getStatus();
-    if (status === "running") {this.crawler.pause();}
-    else if (status === "paused") {this.crawler.resume();}
+    if (status === "running") {
+      this.crawler.pause();
+    } else if (status === "paused") {
+      this.crawler.resume();
+    }
   }
 
   updateConfigFromWorkspace(): void {
@@ -148,6 +240,7 @@ export class CrawlController {
     this.crawler?.stop();
     this.stopFlushTimer();
     this.statusBar.setIdle();
+    void this.closeRenderer();
   }
 
   // ---- engine plumbing ----------------------------------------------------
@@ -233,6 +326,63 @@ export class CrawlController {
     this.getBus()?.post({ type: "crawl:done", stats });
     this.getBus()?.post({ type: "stats:tick", stats });
     this.stopFlushTimer();
+    void this.maybeRunPageSpeed();
+  }
+
+  private async maybeRunPageSpeed(): Promise<void> {
+    const cfg = this.getWsConfig();
+    if (!cfg.get<boolean>("pagespeed.enabled")) {return;}
+    const key = await this.getPsiKey();
+    if (!key) {
+      void vscode.window.showWarningMessage(
+        'SafiCrawl: PageSpeed is enabled but no API key is configured. Run "Set PageSpeed API Key".',
+      );
+      return;
+    }
+    const limit = cfg.get<number>("pagespeed.urlLimit") ?? 50;
+    const strategyChoice = cfg.get<string>("pagespeed.strategy") ?? "mobile";
+    const strategies: PsiStrategy[] =
+      strategyChoice === "both"
+        ? ["mobile", "desktop"]
+        : strategyChoice === "desktop"
+          ? ["desktop"]
+          : ["mobile"];
+
+    const urls = this.urlBuf
+      .snapshot()
+      .filter(
+        (u) =>
+          u.statusCode !== null && u.statusCode >= 200 && u.statusCode < 400,
+      )
+      .map((u) => u.url);
+
+    this.psiAbort = { aborted: false };
+    this.pagespeedRows = [];
+
+    const summary = await runBatch(urls, {
+      apiKey: key,
+      strategies,
+      limit,
+      signal: this.psiAbort,
+      onResult: (row) => {
+        this.pagespeedRows.push(row);
+        this.getBus()?.post({ type: "pagespeed:batch", rows: [row] });
+      },
+      onAbort: (reason) => {
+        void vscode.window.showErrorMessage(`SafiCrawl: ${reason}`);
+      },
+    });
+
+    this.getBus()?.post({
+      type: "pagespeed:done",
+      analyzed: summary.analyzed,
+      skipped: summary.skipped,
+    });
+    if (!summary.aborted) {
+      void vscode.window.showInformationMessage(
+        `SafiCrawl: PageSpeed analyzed ${summary.analyzed} URL(s), skipped ${summary.skipped}.`,
+      );
+    }
   }
 
   // ---- batching -----------------------------------------------------------

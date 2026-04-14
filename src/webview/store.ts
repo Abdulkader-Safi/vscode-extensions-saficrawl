@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { onMessage, send } from "./messaging";
 import type {
   CrawlStats,
+  CwvMessageRow,
   HostToWebview,
   IssueRow,
   LinkRow,
@@ -42,6 +43,8 @@ export interface Filters {
 export interface EnvState {
   isWebVsCode: boolean;
   playwrightInstalled: boolean;
+  playwrightPath: string | null;
+  pageSpeedKeyConfigured: boolean;
 }
 
 interface State {
@@ -54,6 +57,8 @@ interface State {
   settings: Record<string, unknown>;
   activeTab: TabId;
   filters: Filters;
+  pagespeed: Record<string, CwvMessageRow>;
+  pageSpeedSummary: { analyzed: number; skipped: number } | null;
 }
 
 interface Actions {
@@ -65,6 +70,10 @@ interface Actions {
   startCrawl(url: string): void;
   stopCrawl(): void;
   pauseResume(): void;
+  setPageSpeedKey(): void;
+  clearPageSpeedKey(): void;
+  openPlaywrightDocs(): void;
+  installBrowsers(): void;
 }
 
 export const useStore = create<State & Actions>((set) => ({
@@ -77,6 +86,8 @@ export const useStore = create<State & Actions>((set) => ({
   settings: {},
   activeTab: "overview",
   filters: { search: "", urlFilterToUrl: null },
+  pagespeed: {},
+  pageSpeedSummary: null,
 
   onMessage: (msg) =>
     set((state) => {
@@ -88,6 +99,8 @@ export const useStore = create<State & Actions>((set) => ({
             env: {
               isWebVsCode: msg.isWebVsCode,
               playwrightInstalled: msg.playwrightInstalled,
+              playwrightPath: msg.playwrightPath,
+              pageSpeedKeyConfigured: msg.pageSpeedKeyConfigured,
             },
           };
         case "crawl:started":
@@ -97,6 +110,8 @@ export const useStore = create<State & Actions>((set) => ({
             links: [],
             issues: [],
             filters: { search: "", urlFilterToUrl: null },
+            pagespeed: {},
+            pageSpeedSummary: null,
           };
         case "crawl:done":
           return { stats: msg.stats };
@@ -133,6 +148,15 @@ export const useStore = create<State & Actions>((set) => ({
           return { settings: msg.settings };
         case "saved:list":
           return {};
+        case "pagespeed:batch": {
+          const merged = { ...state.pagespeed };
+          for (const r of msg.rows) {merged[r.url] = r;}
+          return { pagespeed: merged };
+        }
+        case "pagespeed:done":
+          return {
+            pageSpeedSummary: { analyzed: msg.analyzed, skipped: msg.skipped },
+          };
         default:
           return {};
       }
@@ -153,6 +177,10 @@ export const useStore = create<State & Actions>((set) => ({
   startCrawl: (url) => send({ type: "crawl:start", url }),
   stopCrawl: () => send({ type: "crawl:stop" }),
   pauseResume: () => send({ type: "crawl:pauseResume" }),
+  setPageSpeedKey: () => send({ type: "setPageSpeedKey" }),
+  clearPageSpeedKey: () => send({ type: "clearPageSpeedKey" }),
+  openPlaywrightDocs: () => send({ type: "openPlaywrightDocs" }),
+  installBrowsers: () => send({ type: "installBrowsers" }),
 }));
 
 /** Single hook mounted once by <App />. Subscribes to host messages and sends "ready". */
@@ -174,9 +202,13 @@ export function severityCounts(issues: IssueRow[]): {
     warnings = 0,
     info = 0;
   for (const i of issues) {
-    if (i.type === "error") {errors++;}
-    else if (i.type === "warning") {warnings++;}
-    else {info++;}
+    if (i.type === "error") {
+      errors++;
+    } else if (i.type === "warning") {
+      warnings++;
+    } else {
+      info++;
+    }
   }
   return { errors, warnings, info };
 }
