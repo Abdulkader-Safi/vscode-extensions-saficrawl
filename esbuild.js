@@ -80,7 +80,7 @@ async function main() {
     sourcesContent: false,
     platform: "node",
     outfile: "dist/extension.js",
-    external: ["vscode"],
+    external: ["vscode", "better-sqlite3", "playwright"],
     logLevel: "silent",
     plugins: [esbuildProblemMatcherPlugin],
   });

@@ -1,27 +1,302 @@
 {
-  "name": "react-starter",
-  "displayName": "react-starter",
-  "description": "",
-  "version": "0.0.1",
+  "name": "saficrawl",
+  "displayName": "SafiCrawl",
+  "description": "In-editor website crawler and SEO auditing tool for VS Code.",
+  "version": "0.1.0",
+  "publisher": "abdulkadersafi",
+  "license": "MIT",
   "engines": {
-    "vscode": "^1.106.1"
+    "vscode": "^1.85.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Linters",
+    "Testing"
   ],
-  "activationEvents": [],
+  "keywords": [
+    "crawler",
+    "seo",
+    "audit",
+    "sitemap",
+    "pagespeed",
+    "accessibility"
+  ],
+  "activationEvents": [
+    "onCommand:SafiCrawl.start",
+    "onCommand:SafiCrawl.stop",
+    "onCommand:SafiCrawl.pauseResume",
+    "onCommand:SafiCrawl.dashboard",
+    "onCommand:SafiCrawl.export",
+    "onCommand:SafiCrawl.load",
+    "onCommand:SafiCrawl.settings",
+    "onCommand:SafiCrawl.installBrowsers",
+    "onView:saficrawl.sidebar"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "react-starter.helloWorld",
-        "title": "Hello World"
+        "command": "SafiCrawl.start",
+        "title": "SafiCrawl: Start Crawl",
+        "icon": "$(play)"
       },
       {
-        "command": "react-starter.openReactView",
-        "title": "Open React View"
+        "command": "SafiCrawl.stop",
+        "title": "SafiCrawl: Stop Crawl",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "SafiCrawl.pauseResume",
+        "title": "SafiCrawl: Pause / Resume",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "SafiCrawl.dashboard",
+        "title": "SafiCrawl: Open Dashboard"
+      },
+      {
+        "command": "SafiCrawl.export",
+        "title": "SafiCrawl: Export Results\u2026"
+      },
+      {
+        "command": "SafiCrawl.load",
+        "title": "SafiCrawl: Load Saved Crawl\u2026"
+      },
+      {
+        "command": "SafiCrawl.settings",
+        "title": "SafiCrawl: Open Settings"
+      },
+      {
+        "command": "SafiCrawl.installBrowsers",
+        "title": "SafiCrawl: Install Playwright Browsers"
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "saficrawl",
+          "title": "SafiCrawl",
+          "icon": "$(globe)"
+        }
+      ]
+    },
+    "views": {
+      "saficrawl": [
+        {
+          "id": "saficrawl.sidebar",
+          "name": "Saved Crawls",
+          "icon": "$(globe)",
+          "contextualTitle": "SafiCrawl"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "SafiCrawl.start",
+          "when": "view == saficrawl.sidebar",
+          "group": "navigation@1"
+        },
+        {
+          "command": "SafiCrawl.dashboard",
+          "when": "view == saficrawl.sidebar",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "SafiCrawl",
+      "properties": {
+        "SafiCrawl.crawler.maxDepth": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum crawl depth."
+        },
+        "SafiCrawl.crawler.maxUrls": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1,
+          "description": "Maximum number of URLs to crawl."
+        },
+        "SafiCrawl.crawler.delay": {
+          "type": "number",
+          "default": 1.0,
+          "minimum": 0,
+          "maximum": 60,
+          "description": "Delay between requests in seconds."
+        },
+        "SafiCrawl.crawler.concurrency": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Number of concurrent worker slots."
+        },
+        "SafiCrawl.crawler.followRedirects": {
+          "type": "boolean",
+          "default": true
+        },
+        "SafiCrawl.crawler.includeExternal": {
+          "type": "boolean",
+          "default": false
+        },
+        "SafiCrawl.crawler.discoverSitemaps": {
+          "type": "boolean",
+          "default": true
+        },
+        "SafiCrawl.requests.userAgent": {
+          "type": "string",
+          "default": "SafiCrawl/0.1 (+compatible; SEO-audit)"
+        },
+        "SafiCrawl.requests.timeout": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 120
+        },
+        "SafiCrawl.requests.retries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 10
+        },
+        "SafiCrawl.requests.respectRobots": {
+          "type": "boolean",
+          "default": true
+        },
+        "SafiCrawl.requests.acceptLanguage": {
+          "type": "string",
+          "default": "en-US,en;q=0.9"
+        },
+        "SafiCrawl.javascript.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Render pages via Playwright. Requires \"Install Playwright Browsers\"."
+        },
+        "SafiCrawl.javascript.browser": {
+          "type": "string",
+          "enum": [
+            "chromium",
+            "firefox",
+            "webkit"
+          ],
+          "default": "chromium"
+        },
+        "SafiCrawl.javascript.viewportWidth": {
+          "type": "number",
+          "default": 1920,
+          "minimum": 320,
+          "maximum": 3840
+        },
+        "SafiCrawl.javascript.viewportHeight": {
+          "type": "number",
+          "default": 1080,
+          "minimum": 320,
+          "maximum": 2160
+        },
+        "SafiCrawl.javascript.concurrency": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10
+        },
+        "SafiCrawl.javascript.waitTime": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 30,
+          "description": "Seconds to wait after DOMContentLoaded."
+        },
+        "SafiCrawl.javascript.timeout": {
+          "type": "number",
+          "default": 30,
+          "minimum": 5,
+          "maximum": 120
+        },
+        "SafiCrawl.filters.includeExtensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "SafiCrawl.filters.excludeExtensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".pdf",
+            ".zip",
+            ".mp4",
+            ".jpg",
+            ".png",
+            ".gif",
+            ".svg",
+            ".css",
+            ".js"
+          ]
+        },
+        "SafiCrawl.filters.urlRegex": {
+          "type": "string",
+          "default": ""
+        },
+        "SafiCrawl.filters.maxFileSizeMB": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "SafiCrawl.pagespeed.enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "SafiCrawl.pagespeed.urlLimit": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "maximum": 25000
+        },
+        "SafiCrawl.pagespeed.strategy": {
+          "type": "string",
+          "enum": [
+            "mobile",
+            "desktop",
+            "both"
+          ],
+          "default": "mobile"
+        },
+        "SafiCrawl.advanced.proxy": {
+          "type": "string",
+          "default": ""
+        },
+        "SafiCrawl.advanced.customHeaders": {
+          "type": "object",
+          "default": {}
+        },
+        "SafiCrawl.advanced.logLevel": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug"
+          ],
+          "default": "info"
+        },
+        "SafiCrawl.diagnostics.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Surface SEO issues for workspace-mapped URLs in the Problems panel."
+        },
+        "SafiCrawl.telemetry.enabled": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
@@ -43,7 +318,7 @@
     "@types/node": "22.x",
     "@types/react": "^19.2.6",
     "@types/react-dom": "^19.2.3",
-    "@types/vscode": "^1.106.1",
+    "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^8.45.0",
     "@typescript-eslint/parser": "^8.45.0",
     "@vscode/test-cli": "^0.0.11",
@@ -59,8 +334,18 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.10.9",
+    "better-sqlite3": "^11.5.0",
+    "cheerio": "^1.0.0",
+    "fast-xml-parser": "^4.5.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router-dom": "^7.9.6"
+    "robots-parser": "^3.0.1",
+    "undici": "^6.21.0",
+    "vis-network": "^9.1.9",
+    "zustand": "^5.0.2"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.49.0"
   }
 }

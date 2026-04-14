@@ -1,53 +1,33 @@
 import * as vscode from "vscode";
-import * as path from "path";
-import * as fs from "fs";
+import { HostBus, type HostHandler } from "./messaging/bus";
 
-export class ReactWebviewProvider {
-  public static currentPanel: ReactWebviewProvider | undefined;
-  private readonly _panel: vscode.WebviewPanel;
-  private _disposables: vscode.Disposable[] = [];
+export class SafiCrawlPanel {
+  public static current: SafiCrawlPanel | undefined;
+  private readonly panel: vscode.WebviewPanel;
+  private readonly extensionUri: vscode.Uri;
+  private readonly disposables: vscode.Disposable[] = [];
+  public readonly bus: HostBus;
 
-  private constructor(
-    panel: vscode.WebviewPanel,
-    private readonly _extensionUri: vscode.Uri
-  ) {
-    this._panel = panel;
-
-    this._panel.webview.html = this._getHtmlForWebview(this._panel.webview);
-
-    this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
-
-    // Handle messages from the webview
-    this._panel.webview.onDidReceiveMessage(
-      async (data) => {
-        switch (data.type) {
-          case "showNotification":
-            vscode.window.showInformationMessage(data.message);
-            break;
-          case "getDirectoryContents":
-            this._handleGetDirectoryContents();
-            break;
-        }
-      },
-      null,
-      this._disposables
-    );
+  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
+    this.panel = panel;
+    this.extensionUri = extensionUri;
+    this.panel.webview.html = this.renderHtml(this.panel.webview);
+    this.bus = new HostBus(this.panel.webview);
+    this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
   }
 
-  public static createOrShow(extensionUri: vscode.Uri) {
-    const column = vscode.window.activeTextEditor
-      ? vscode.window.activeTextEditor.viewColumn
-      : undefined;
+  public static createOrShow(extensionUri: vscode.Uri, onMessage: HostHandler): SafiCrawlPanel {
+    const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
 
-    if (ReactWebviewProvider.currentPanel) {
-      ReactWebviewProvider.currentPanel._panel.reveal(column);
-      return;
+    if (SafiCrawlPanel.current) {
+      SafiCrawlPanel.current.panel.reveal(column);
+      return SafiCrawlPanel.current;
     }
 
     const panel = vscode.window.createWebviewPanel(
-      "reactView",
-      "React App",
-      column || vscode.ViewColumn.One,
+      "saficrawl.panel",
+      "SafiCrawl",
+      column,
       {
         enableScripts: true,
         localResourceRoots: [vscode.Uri.joinPath(extensionUri, "dist")],
@@ -55,100 +35,57 @@ export class ReactWebviewProvider {
       }
     );
 
-    ReactWebviewProvider.currentPanel = new ReactWebviewProvider(
-      panel,
-      extensionUri
-    );
+    const instance = new SafiCrawlPanel(panel, extensionUri);
+    instance.disposables.push(instance.bus.onMessage(onMessage));
+    SafiCrawlPanel.current = instance;
+    return instance;
   }
 
-  public dispose() {
-    ReactWebviewProvider.currentPanel = undefined;
+  public reveal(): void {
+    this.panel.reveal();
+  }
 
-    this._panel.dispose();
-
-    while (this._disposables.length) {
-      const disposable = this._disposables.pop();
-      if (disposable) {
-        disposable.dispose();
-      }
+  public dispose(): void {
+    SafiCrawlPanel.current = undefined;
+    this.panel.dispose();
+    while (this.disposables.length) {
+      this.disposables.pop()?.dispose();
     }
   }
 
-  private async _handleGetDirectoryContents() {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) {
-      this._panel.webview.postMessage({
-        type: "directoryContents",
-        data: { error: "No workspace folder open" },
-      });
-      return;
-    }
-
-    const workspaceRoot = workspaceFolders[0].uri.fsPath;
-    try {
-      const items = await vscode.workspace.fs.readDirectory(
-        vscode.Uri.file(workspaceRoot)
-      );
-      const contents = items.map(([name, type]) => ({
-        name,
-        type: type === vscode.FileType.Directory ? "directory" : "file",
-      }));
-
-      this._panel.webview.postMessage({
-        type: "directoryContents",
-        data: { contents, path: workspaceRoot },
-      });
-    } catch (error) {
-      this._panel.webview.postMessage({
-        type: "directoryContents",
-        data: { error: "Failed to read directory" },
-      });
-    }
-  }
-
-  private _getHtmlForWebview(webview: vscode.Webview) {
+  private renderHtml(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, "dist", "webview.js")
+      vscode.Uri.joinPath(this.extensionUri, "dist", "webview.js")
     );
     const styleUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, "dist", "webview.css")
+      vscode.Uri.joinPath(this.extensionUri, "dist", "webview.css")
     );
+    const nonce = randomNonce();
 
-    const nonce = getNonce();
-
-    return `<!DOCTYPE html>
-			<html lang="en">
-			<head>
-				<meta charset="UTF-8">
-				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data:;">
-				<meta name="viewport" content="width=device-width, initial-scale=1.0">
-				<link href="${styleUri}" rel="stylesheet">
-				<title>React Starter</title>
-				<style>
-					body { margin: 0; padding: 0; }
-					#root { width: 100%; height: 100vh; }
-				</style>
-			</head>
-			<body>
-				<div id="root"></div>
-				<script nonce="${nonce}" type="module" src="${scriptUri}"></script>
-				// <script nonce="${nonce}">
-        // console.log('Webview HTML loaded');
-        // console.log('Root element:', document.getElementById('root'));
-        // console.log('Script URI:', '${scriptUri}');
-        // console.log('Style URI:', '${styleUri}');
-				// </script>
-			</body>
-			</html>`;
+    return /* html */ `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data: https:; connect-src 'none';" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link href="${styleUri}" rel="stylesheet" />
+    <title>SafiCrawl</title>
+    <style>
+      body { margin: 0; padding: 0; }
+      #root { width: 100%; height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
+  </body>
+</html>`;
   }
 }
 
-function getNonce() {
-  let text = "";
-  const possible =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
+function randomNonce(): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let out = "";
+  for (let i = 0; i < 32; i++) {out += chars.charAt(Math.floor(Math.random() * chars.length));}
+  return out;
 }
