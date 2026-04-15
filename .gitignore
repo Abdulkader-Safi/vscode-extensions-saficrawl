@@ -3,3 +3,6 @@ dist
 node_modules
 .vscode-test/
 *.vsix
+Features.md
+PRD.md
+key.md
