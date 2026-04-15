@@ -31,7 +31,8 @@ export interface StoredCrawl {
 
 export interface ResumeCheckpoint {
   visited: string[];
-  queue: Array<[string, number]>;
+  // [url, depth] for back-compat OR [url, depth, priority] (priority 0 = sitemap, 1 = BFS).
+  queue: Array<[string, number] | [string, number, number]>;
 }
 
 export interface LoadedCrawl {
@@ -78,7 +79,7 @@ const INSERT_ISSUE_SQL = `
   VALUES ($crawl_id, $url, $type, $category, $issue, $details)
 `;
 
-const INSERT_QUEUE_SQL = `INSERT OR REPLACE INTO crawl_queue (crawl_id, url, depth) VALUES ($crawl_id, $url, $depth)`;
+const INSERT_QUEUE_SQL = `INSERT OR REPLACE INTO crawl_queue (crawl_id, url, depth, priority) VALUES ($crawl_id, $url, $depth, $priority)`;
 const DELETE_QUEUE_SQL = `DELETE FROM crawl_queue WHERE crawl_id = ?`;
 
 const INSERT_PAGESPEED_SQL = `
@@ -119,6 +120,26 @@ export class CrawlDb {
     }
     // sql.js drops PRAGMA state per connection; re-enable FK enforcement explicitly.
     db.exec("PRAGMA foreign_keys = ON;");
+    // Idempotent migration: add crawl_queue.priority column if missing (older DBs predate sitemap-first).
+    const cols = (() => {
+      const stmt = db.prepare(`PRAGMA table_info(crawl_queue)`);
+      const out: string[] = [];
+      try {
+        while (stmt.step()) {
+          out.push(
+            String((stmt.getAsObject() as { name?: string }).name ?? ""),
+          );
+        }
+      } finally {
+        stmt.free();
+      }
+      return out;
+    })();
+    if (!cols.includes("priority")) {
+      db.exec(
+        "ALTER TABLE crawl_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 1;",
+      );
+    }
     return new CrawlDb(db, dbPath);
   }
 
@@ -134,8 +155,13 @@ export class CrawlDb {
       this.flushPersist();
       return;
     }
-    if (this.persistTimer) {return;}
-    this.persistTimer = setTimeout(() => this.flushPersist(), PERSIST_THROTTLE_MS);
+    if (this.persistTimer) {
+      return;
+    }
+    this.persistTimer = setTimeout(
+      () => this.flushPersist(),
+      PERSIST_THROTTLE_MS,
+    );
   }
 
   private flushPersist(): void {
@@ -143,7 +169,9 @@ export class CrawlDb {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
-    if (!this.persistDirty) {return;}
+    if (!this.persistDirty) {
+      return;
+    }
     const bytes = this.db.export();
     const tmp = this.dbPath + ".tmp";
     fs.writeFileSync(tmp, Buffer.from(bytes));
@@ -192,12 +220,23 @@ export class CrawlDb {
     this.schedulePersist();
   }
 
-  saveQueue(id: number, pending: Array<[string, number]>): void {
+  saveQueue(
+    id: number,
+    pending: Array<[string, number] | [string, number, number]>,
+  ): void {
     this.db.run("BEGIN");
     try {
       this.db.run(DELETE_QUEUE_SQL, [id]);
-      for (const [url, depth] of pending) {
-        this.db.run(INSERT_QUEUE_SQL, { $crawl_id: id, $url: url, $depth: depth });
+      for (const entry of pending) {
+        const url = entry[0];
+        const depth = entry[1];
+        const priority = entry[2] ?? 1;
+        this.db.run(INSERT_QUEUE_SQL, {
+          $crawl_id: id,
+          $url: url,
+          $depth: depth,
+          $priority: priority,
+        });
       }
       this.db.run("COMMIT");
     } catch (err) {
@@ -207,78 +246,105 @@ export class CrawlDb {
     this.schedulePersist();
   }
 
-  saveUrls(id: number, rows: UrlRow[], jsRenderedByUrl?: Map<string, boolean>): void {
-    if (rows.length === 0) {return;}
-    this.runBatch(INSERT_URL_SQL, rows.map((r) => ({
-      $crawl_id: id,
-      $url: r.url,
-      $depth: r.depth,
-      $status_code: r.statusCode,
-      $content_type: null,
-      $size: 0,
-      $response_time_ms: r.loadTimeMs ?? 0,
-      $title: r.title,
-      $word_count: r.wordCount,
-      $internal: r.internal ? 1 : 0,
-      $issue_count: r.issueCount,
-      $js_rendered: jsRenderedByUrl?.get(r.url) ? 1 : 0,
-      $fields_json: JSON.stringify(r),
-    })));
+  saveUrls(
+    id: number,
+    rows: UrlRow[],
+    jsRenderedByUrl?: Map<string, boolean>,
+  ): void {
+    if (rows.length === 0) {
+      return;
+    }
+    this.runBatch(
+      INSERT_URL_SQL,
+      rows.map((r) => ({
+        $crawl_id: id,
+        $url: r.url,
+        $depth: r.depth,
+        $status_code: r.statusCode,
+        $content_type: null,
+        $size: 0,
+        $response_time_ms: r.loadTimeMs ?? 0,
+        $title: r.title,
+        $word_count: r.wordCount,
+        $internal: r.internal ? 1 : 0,
+        $issue_count: r.issueCount,
+        $js_rendered: jsRenderedByUrl?.get(r.url) ? 1 : 0,
+        $fields_json: JSON.stringify(r),
+      })),
+    );
     this.updateCounts(id);
     this.schedulePersist();
   }
 
   saveLinks(id: number, rows: LinkRow[]): void {
-    if (rows.length === 0) {return;}
-    this.runBatch(INSERT_LINK_SQL, rows.map((r) => ({
-      $crawl_id: id,
-      $source_url: r.sourceUrl,
-      $target_url: r.targetUrl,
-      $anchor_text: r.anchorText,
-      $is_internal: r.isInternal ? 1 : 0,
-      $target_domain: r.targetDomain,
-      $target_status: r.targetStatus,
-      $placement: r.placement,
-    })));
+    if (rows.length === 0) {
+      return;
+    }
+    this.runBatch(
+      INSERT_LINK_SQL,
+      rows.map((r) => ({
+        $crawl_id: id,
+        $source_url: r.sourceUrl,
+        $target_url: r.targetUrl,
+        $anchor_text: r.anchorText,
+        $is_internal: r.isInternal ? 1 : 0,
+        $target_domain: r.targetDomain,
+        $target_status: r.targetStatus,
+        $placement: r.placement,
+      })),
+    );
     this.updateCounts(id);
     this.schedulePersist();
   }
 
   saveIssues(id: number, rows: IssueRow[]): void {
-    if (rows.length === 0) {return;}
-    this.runBatch(INSERT_ISSUE_SQL, rows.map((r) => ({
-      $crawl_id: id,
-      $url: r.url,
-      $type: r.type,
-      $category: r.category,
-      $issue: r.issue,
-      $details: r.details,
-    })));
+    if (rows.length === 0) {
+      return;
+    }
+    this.runBatch(
+      INSERT_ISSUE_SQL,
+      rows.map((r) => ({
+        $crawl_id: id,
+        $url: r.url,
+        $type: r.type,
+        $category: r.category,
+        $issue: r.issue,
+        $details: r.details,
+      })),
+    );
     this.updateCounts(id);
     this.schedulePersist();
   }
 
   savePageSpeed(id: number, rows: CwvRow[]): void {
-    if (rows.length === 0) {return;}
-    this.runBatch(INSERT_PAGESPEED_SQL, rows.map((r) => ({
-      $crawl_id: id,
-      $url: r.url,
-      $strategy: r.strategy,
-      $performance: r.performance,
-      $lcp_ms: r.lcpMs,
-      $cls_score: r.clsScore,
-      $fcp_ms: r.fcpMs,
-      $inp_ms: r.inpMs,
-      $ttfb_ms: r.ttfbMs,
-      $tbt_ms: r.tbtMs,
-      $error: r.error,
-    })));
+    if (rows.length === 0) {
+      return;
+    }
+    this.runBatch(
+      INSERT_PAGESPEED_SQL,
+      rows.map((r) => ({
+        $crawl_id: id,
+        $url: r.url,
+        $strategy: r.strategy,
+        $performance: r.performance,
+        $lcp_ms: r.lcpMs,
+        $cls_score: r.clsScore,
+        $fcp_ms: r.fcpMs,
+        $inp_ms: r.inpMs,
+        $ttfb_ms: r.ttfbMs,
+        $tbt_ms: r.tbtMs,
+        $error: r.error,
+      })),
+    );
     this.updateCounts(id);
     this.schedulePersist();
   }
 
   recordEngineError(id: number): void {
-    this.db.run(`UPDATE crawls SET error_count = error_count + 1 WHERE id = ?`, [id]);
+    this.db.run(
+      `UPDATE crawls SET error_count = error_count + 1 WHERE id = ?`,
+      [id],
+    );
     this.schedulePersist();
   }
 
@@ -308,13 +374,17 @@ export class CrawlDb {
 
   loadCrawl(id: number): LoadedCrawl | null {
     const crawl = this.getCrawl(id);
-    if (!crawl) {return null;}
+    if (!crawl) {
+      return null;
+    }
 
     const urlRows = this.selectMany(
       `SELECT fields_json FROM crawled_urls WHERE crawl_id = ? ORDER BY rowid ASC`,
       [id],
     );
-    const urls: UrlRow[] = urlRows.map((r) => JSON.parse(String(r.fields_json)) as UrlRow);
+    const urls: UrlRow[] = urlRows.map(
+      (r) => JSON.parse(String(r.fields_json)) as UrlRow,
+    );
 
     const linkRows = this.selectMany(
       `SELECT source_url, target_url, anchor_text, is_internal, target_domain, target_status, placement FROM crawl_links WHERE crawl_id = ?`,
@@ -326,7 +396,10 @@ export class CrawlDb {
       anchorText: String(r.anchor_text ?? ""),
       isInternal: Boolean(r.is_internal),
       targetDomain: String(r.target_domain ?? ""),
-      targetStatus: r.target_status === null || r.target_status === undefined ? null : Number(r.target_status),
+      targetStatus:
+        r.target_status === null || r.target_status === undefined
+          ? null
+          : Number(r.target_status),
       placement: r.placement as LinkRow["placement"],
     }));
 
@@ -342,7 +415,10 @@ export class CrawlDb {
       details: String(r.details),
     }));
 
-    const psRows = this.selectMany(`SELECT * FROM crawl_pagespeed WHERE crawl_id = ?`, [id]);
+    const psRows = this.selectMany(
+      `SELECT * FROM crawl_pagespeed WHERE crawl_id = ?`,
+      [id],
+    );
     const pagespeed: CwvRow[] = psRows.map((r) => ({
       url: String(r.url),
       strategy: r.strategy as CwvRow["strategy"],
@@ -361,14 +437,19 @@ export class CrawlDb {
       [id],
     )[0];
     const checkpoint = rawCheckpoint?.resume_checkpoint
-      ? (JSON.parse(String(rawCheckpoint.resume_checkpoint)) as ResumeCheckpoint)
+      ? (JSON.parse(
+          String(rawCheckpoint.resume_checkpoint),
+        ) as ResumeCheckpoint)
       : null;
 
     return { crawl, urls, links, issues, pagespeed, checkpoint };
   }
 
   archiveCrawl(id: number): void {
-    this.db.run(`UPDATE crawls SET archived_at = ? WHERE id = ?`, [Date.now(), id]);
+    this.db.run(`UPDATE crawls SET archived_at = ? WHERE id = ?`, [
+      Date.now(),
+      id,
+    ]);
     this.schedulePersist();
   }
 
@@ -394,12 +475,21 @@ export class CrawlDb {
     this.schedulePersist();
   }
 
-  getResumeQueue(id: number): Array<[string, number]> {
+  getResumeQueue(id: number): Array<[string, number, number]> {
     const rows = this.selectMany(
-      `SELECT url, depth FROM crawl_queue WHERE crawl_id = ?`,
+      `SELECT url, depth, priority FROM crawl_queue WHERE crawl_id = ?`,
       [id],
     );
-    return rows.map((r) => [String(r.url), Number(r.depth)] as [string, number]);
+    return rows.map(
+      (r) =>
+        [
+          String(r.url),
+          Number(r.depth),
+          r.priority === null || r.priority === undefined
+            ? 1
+            : Number(r.priority),
+        ] as [string, number, number],
+    );
   }
 
   getVisitedUrls(id: number): string[] {
@@ -411,7 +501,9 @@ export class CrawlDb {
   }
 
   private runBatch(sql: string, params: Array<Record<string, unknown>>): void {
-    if (params.length === 0) {return;}
+    if (params.length === 0) {
+      return;
+    }
     this.db.run("BEGIN");
     try {
       const stmt = this.db.prepare(sql);
@@ -429,7 +521,10 @@ export class CrawlDb {
     }
   }
 
-  private selectMany(sql: string, params: unknown[] = []): Array<Record<string, unknown>> {
+  private selectMany(
+    sql: string,
+    params: unknown[] = [],
+  ): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
     const stmt = this.db.prepare(sql);
     try {
@@ -446,7 +541,9 @@ export class CrawlDb {
   private scalarNumber(sql: string, params: unknown[] = []): number {
     const rows = this.selectMany(sql, params);
     const first = rows[0];
-    if (!first) {return 0;}
+    if (!first) {
+      return 0;
+    }
     const firstKey = Object.keys(first)[0];
     return Number(first[firstKey] ?? 0);
   }
@@ -459,8 +556,14 @@ function rowToCrawl(row: Record<string, unknown>): StoredCrawl {
     status: row.status as StoredStatus,
     config: JSON.parse(String(row.config_json)) as CrawlerConfig,
     startedAt: Number(row.started_at),
-    completedAt: row.completed_at === null || row.completed_at === undefined ? null : Number(row.completed_at),
-    archivedAt: row.archived_at === null || row.archived_at === undefined ? null : Number(row.archived_at),
+    completedAt:
+      row.completed_at === null || row.completed_at === undefined
+        ? null
+        : Number(row.completed_at),
+    archivedAt:
+      row.archived_at === null || row.archived_at === undefined
+        ? null
+        : Number(row.archived_at),
     canResume: Boolean(row.can_resume),
     urlCount: Number(row.url_count),
     linkCount: Number(row.link_count),
@@ -476,17 +579,38 @@ function toNum(v: unknown): number | null {
 
 function resolveSchemaPath(): string {
   const inline = path.join(__dirname, "schema.sql");
-  if (fs.existsSync(inline)) {return inline;}
+  if (fs.existsSync(inline)) {
+    return inline;
+  }
   const src = path.join(__dirname, "..", "..", "src", "storage", "schema.sql");
-  if (fs.existsSync(src)) {return src;}
+  if (fs.existsSync(src)) {
+    return src;
+  }
   return inline;
 }
 
 function loadWasmBinary(): Uint8Array {
   const candidates: string[] = [
     path.join(__dirname, "sql-wasm.wasm"),
-    path.join(__dirname, "..", "..", "node_modules", "sql.js", "dist", "sql-wasm.wasm"),
-    path.join(__dirname, "..", "..", "..", "node_modules", "sql.js", "dist", "sql-wasm.wasm"),
+    path.join(
+      __dirname,
+      "..",
+      "..",
+      "node_modules",
+      "sql.js",
+      "dist",
+      "sql-wasm.wasm",
+    ),
+    path.join(
+      __dirname,
+      "..",
+      "..",
+      "..",
+      "node_modules",
+      "sql.js",
+      "dist",
+      "sql-wasm.wasm",
+    ),
   ];
   try {
     const pkg = require.resolve("sql.js/package.json");

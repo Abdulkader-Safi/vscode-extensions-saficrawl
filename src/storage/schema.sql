@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS crawl_queue (
   crawl_id  INTEGER NOT NULL REFERENCES crawls(id) ON DELETE CASCADE,
   url       TEXT    NOT NULL,
   depth     INTEGER NOT NULL,
+  priority  INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (crawl_id, url)
 );
 

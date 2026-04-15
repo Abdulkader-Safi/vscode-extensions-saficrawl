@@ -150,7 +150,9 @@ export const useStore = create<State & Actions>((set) => ({
           return {};
         case "pagespeed:batch": {
           const merged = { ...state.pagespeed };
-          for (const r of msg.rows) {merged[r.url] = r;}
+          for (const r of msg.rows) {
+            merged[`${r.url}|${r.strategy}`] = r;
+          }
           return { pagespeed: merged };
         }
         case "pagespeed:done":

@@ -35,10 +35,14 @@ export async function runBatch(
   let backoff = 0;
 
   for (const url of limited) {
-    if (options.signal?.aborted) {return { analyzed, skipped, aborted: true };}
+    if (options.signal?.aborted) {
+      return { analyzed, skipped, aborted: true };
+    }
 
     for (const strategy of options.strategies) {
-      if (options.signal?.aborted) {return { analyzed, skipped, aborted: true };}
+      if (options.signal?.aborted) {
+        return { analyzed, skipped, aborted: true };
+      }
       const row = await fetchOne(url, strategy, options.apiKey, backoff);
       if (row.status === "keyRevoked") {
         options.onAbort?.("Invalid PageSpeed API key — feature disabled.");
@@ -59,7 +63,7 @@ export async function runBatch(
   return { analyzed, skipped, aborted: false };
 }
 
-async function fetchOne(
+export async function fetchOne(
   url: string,
   strategy: PsiStrategy,
   apiKey: string,
@@ -68,7 +72,9 @@ async function fetchOne(
   status: "ok" | "rateLimited" | "error" | "keyRevoked";
   row: CwvRow;
 }> {
-  if (backoff > 0) {await delay(backoff);}
+  if (backoff > 0) {
+    await delay(backoff);
+  }
   const endpoint = `${ENDPOINT}?url=${encodeURIComponent(url)}&key=${encodeURIComponent(apiKey)}&strategy=${strategy}`;
   try {
     const res = await request(endpoint, {
@@ -167,4 +173,160 @@ function toNumber(v: unknown): number | null {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export interface PsiWorkerOptions {
+  apiKey: string;
+  strategies: PsiStrategy[];
+  concurrency: number;
+  onResult?: (row: CwvRow) => void;
+  onProgress?: (analyzed: number, skipped: number) => void;
+  onAbort?: (reason: string) => void;
+}
+
+/**
+ * Streaming PageSpeed Insights worker.
+ * Runs N concurrent workers, each pulling from an internal queue with ~1 s spacing per worker.
+ * Enqueue URLs at any time; call `drain()` to wait for the queue to empty.
+ */
+export class PsiWorker {
+  private readonly queue: string[] = [];
+  private readonly seen = new Set<string>();
+  private readonly concurrency: number;
+  private active = 0;
+  private analyzed = 0;
+  private skipped = 0;
+  private aborted = false;
+  private backoffMs = 0;
+  private drainResolvers: Array<() => void> = [];
+  private pokeResolver: (() => void) | null = null;
+  private pokePromise: Promise<void> | null = null;
+
+  constructor(private readonly options: PsiWorkerOptions) {
+    this.concurrency = Math.max(1, Math.min(5, options.concurrency));
+    for (let i = 0; i < this.concurrency; i++) {
+      void this.workerLoop();
+    }
+  }
+
+  enqueue(url: string): void {
+    if (this.aborted) {
+      return;
+    }
+    if (this.seen.has(url)) {
+      return;
+    }
+    this.seen.add(url);
+    this.queue.push(url);
+    this.poke();
+  }
+
+  get summary(): { analyzed: number; skipped: number; aborted: boolean } {
+    return {
+      analyzed: this.analyzed,
+      skipped: this.skipped,
+      aborted: this.aborted,
+    };
+  }
+
+  abort(reason = "aborted"): void {
+    if (this.aborted) {
+      return;
+    }
+    this.aborted = true;
+    this.queue.length = 0;
+    this.options.onAbort?.(reason);
+    this.poke();
+    this.resolveDrainers();
+  }
+
+  /** Wait until the queue is empty and all workers are idle. */
+  drain(): Promise<{ analyzed: number; skipped: number; aborted: boolean }> {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (this.aborted || (this.queue.length === 0 && this.active === 0)) {
+          resolve(this.summary);
+        } else {
+          this.drainResolvers.push(() => resolve(this.summary));
+        }
+      };
+      check();
+    });
+  }
+
+  private resolveDrainers(): void {
+    const resolvers = this.drainResolvers.splice(0, this.drainResolvers.length);
+    for (const r of resolvers) {
+      r();
+    }
+  }
+
+  private poke(): void {
+    if (this.pokeResolver) {
+      const r = this.pokeResolver;
+      this.pokeResolver = null;
+      this.pokePromise = null;
+      r();
+    }
+  }
+
+  private waitForWork(): Promise<void> {
+    if (this.pokePromise) {
+      return this.pokePromise;
+    }
+    this.pokePromise = new Promise<void>((resolve) => {
+      this.pokeResolver = resolve;
+    });
+    return this.pokePromise;
+  }
+
+  private async workerLoop(): Promise<void> {
+    while (!this.aborted) {
+      const url = this.queue.shift();
+      if (!url) {
+        if (this.active === 0) {
+          this.resolveDrainers();
+        }
+        await this.waitForWork();
+        continue;
+      }
+      this.active++;
+      try {
+        for (const strategy of this.options.strategies) {
+          if (this.aborted) {
+            break;
+          }
+          const res = await fetchOne(
+            url,
+            strategy,
+            this.options.apiKey,
+            this.backoffMs,
+          );
+          if (res.status === "keyRevoked") {
+            this.abort("Invalid PageSpeed API key \u2014 feature disabled.");
+            break;
+          }
+          if (res.status === "rateLimited") {
+            this.backoffMs = Math.min(
+              MAX_BACKOFF_MS,
+              this.backoffMs === 0 ? 2000 : this.backoffMs * 2,
+            );
+            this.skipped++;
+          } else {
+            this.backoffMs = 0;
+            this.analyzed++;
+            this.options.onResult?.(res.row);
+          }
+          this.options.onProgress?.(this.analyzed, this.skipped);
+          await delay(REQUEST_SPACING_MS);
+        }
+      } finally {
+        this.active--;
+        if (this.queue.length === 0 && this.active === 0) {
+          this.resolveDrainers();
+        }
+      }
+    }
+    this.resolveDrainers();
+  }
 }

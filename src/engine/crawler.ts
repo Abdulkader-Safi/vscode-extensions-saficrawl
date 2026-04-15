@@ -41,7 +41,8 @@ export class Crawler extends CrawlerEvents {
   private robots: RobotsMatcher | null = null;
   private readonly jsRenderer: JsRenderer | null;
 
-  private readonly queue: Array<[string, number]> = [];
+  private readonly p0Queue: Array<[string, number]> = [];
+  private readonly p1Queue: Array<[string, number]> = [];
   private readonly visited = new Set<string>();
   private readonly sources = new SourcePageIndex();
 
@@ -95,13 +96,13 @@ export class Crawler extends CrawlerEvents {
     this.robots = await this.fetchRobots(seed);
 
     const seedDepth = new URL(seed).pathname !== "/" ? 0 : 0;
-    this.enqueue(seed, seedDepth);
+    this.enqueue(seed, seedDepth, 0);
 
     if (this.config.discoverSitemaps) {
       try {
         const sm = await discoverSitemaps(seed, this.http);
         for (const u of sm.urls) {
-          this.enqueue(u, 0);
+          this.enqueue(u, 0, 0);
         }
       } catch {
         // non-fatal
@@ -154,18 +155,24 @@ export class Crawler extends CrawlerEvents {
   }
 
   /** Returns the visited set + pending queue for resume/checkpoint. */
-  getCheckpoint(): { visited: string[]; queue: Array<[string, number]> } {
-    return {
-      visited: [...this.visited],
-      queue: this.queue.map((pair) => [pair[0], pair[1]] as [string, number]),
-    };
+  getCheckpoint(): {
+    visited: string[];
+    queue: Array<[string, number, number]>;
+  } {
+    const p0 = this.p0Queue.map(
+      ([u, d]) => [u, d, 0] as [string, number, number],
+    );
+    const p1 = this.p1Queue.map(
+      ([u, d]) => [u, d, 1] as [string, number, number],
+    );
+    return { visited: [...this.visited], queue: p0.concat(p1) };
   }
 
   /** Preload visited + queue and start without re-seeding the seed URL. Used for resume. */
   async startWithState(
     baseUrl: string,
     visited: Iterable<string>,
-    pendingQueue: Iterable<[string, number]>,
+    pendingQueue: Iterable<[string, number] | [string, number, number]>,
   ): Promise<void> {
     if (this.status === "running" || this.status === "paused") {
       throw new Error("Crawler already running");
@@ -185,9 +192,16 @@ export class Crawler extends CrawlerEvents {
     for (const v of visited) {
       this.visited.add(v);
     }
-    for (const [url, depth] of pendingQueue) {
+    for (const entry of pendingQueue) {
+      const url = entry[0];
+      const depth = entry[1];
+      const priority = (entry[2] ?? 1) === 0 ? 0 : 1;
       if (!this.visited.has(url)) {
-        this.queue.push([url, depth]);
+        if (priority === 0) {
+          this.p0Queue.push([url, depth]);
+        } else {
+          this.p1Queue.push([url, depth]);
+        }
       }
     }
 
@@ -216,7 +230,8 @@ export class Crawler extends CrawlerEvents {
   }
 
   private reset(): void {
-    this.queue.length = 0;
+    this.p0Queue.length = 0;
+    this.p1Queue.length = 0;
     this.visited.clear();
     this.active = 0;
     this.crawledCount = 0;
@@ -224,7 +239,18 @@ export class Crawler extends CrawlerEvents {
     this.stopSignal = false;
   }
 
-  private enqueue(url: string, depth: number): void {
+  private queueLength(): number {
+    return this.p0Queue.length + this.p1Queue.length;
+  }
+
+  private dequeue(): [string, number] | undefined {
+    if (this.p0Queue.length > 0) {
+      return this.p0Queue.shift();
+    }
+    return this.p1Queue.shift();
+  }
+
+  private enqueue(url: string, depth: number, priority: 0 | 1): void {
     if (this.visited.has(url)) {
       return;
     }
@@ -237,7 +263,11 @@ export class Crawler extends CrawlerEvents {
     ) {
       return;
     }
-    this.queue.push([url, depth]);
+    if (priority === 0) {
+      this.p0Queue.push([url, depth]);
+    } else {
+      this.p1Queue.push([url, depth]);
+    }
   }
 
   private filterContext(): FilterContext | null {
@@ -253,7 +283,7 @@ export class Crawler extends CrawlerEvents {
   }
 
   private async runLoop(): Promise<void> {
-    while (!this.stopSignal && (this.queue.length > 0 || this.active > 0)) {
+    while (!this.stopSignal && (this.queueLength() > 0 || this.active > 0)) {
       if (this.status === "paused" && this.pausePromise) {
         await this.pausePromise;
       }
@@ -264,10 +294,10 @@ export class Crawler extends CrawlerEvents {
       while (
         !this.stopSignal &&
         this.active < this.config.concurrency &&
-        this.queue.length > 0 &&
+        this.queueLength() > 0 &&
         this.crawledCount + this.active < this.config.maxUrls
       ) {
-        const next = this.queue.shift();
+        const next = this.dequeue();
         if (!next) {
           break;
         }
@@ -342,7 +372,7 @@ export class Crawler extends CrawlerEvents {
           this.sources.add(link.targetUrl, url);
           this.emit("link:found", link);
           if (link.isInternal) {
-            this.enqueue(link.targetUrl, depth + 1);
+            this.enqueue(link.targetUrl, depth + 1, 1);
           }
         }
       }
@@ -384,7 +414,7 @@ export class Crawler extends CrawlerEvents {
       elapsedMs > 0 ? this.crawledCount / (elapsedMs / 1000) : 0;
     return {
       crawled: this.crawledCount,
-      queued: this.queue.length,
+      queued: this.queueLength(),
       maxUrls: this.config.maxUrls,
       urlsPerSec,
       elapsedMs,

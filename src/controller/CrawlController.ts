@@ -21,7 +21,7 @@ import type {
 import type { StatusBar } from "../ui/statusBar";
 import { RingBuffer } from "./buffers";
 import { hotApplicablePatch, readConfig } from "./configSnapshot";
-import { runBatch } from "../pagespeed/psiClient";
+import { PsiWorker } from "../pagespeed/psiClient";
 import type { CwvRow, PsiStrategy } from "../pagespeed/types";
 import type { CrawlDb, LoadedCrawl } from "../storage/crawlDb";
 
@@ -55,8 +55,9 @@ export class CrawlController {
   private flushTimer: NodeJS.Timeout | null = null;
   private jsRenderer: JsRenderer | null = null;
 
-  private psiAbort = { aborted: false };
   private pagespeedRows: CwvRow[] = [];
+  private psiWorker: PsiWorker | null = null;
+  private psiTotalExpected = 0;
 
   private readonly jsRenderedByUrl = new Map<string, boolean>();
   private onCrawlsChanged: (() => void) | null = null;
@@ -134,6 +135,7 @@ export class CrawlController {
     this.notifyCrawlsChanged();
 
     this.jsRenderer = await this.tryCreateRenderer();
+    await this.maybeCreatePsiWorker();
 
     const crawler = new Crawler({
       config: this.config,
@@ -273,7 +275,7 @@ export class CrawlController {
 
     // Build the queue: prefer checkpoint, fall back to the persisted queue table.
     const visited = new Set(loaded.urls.map((u) => u.url));
-    const queue: Array<[string, number]> =
+    const queue: Array<[string, number] | [string, number, number]> =
       loaded.checkpoint?.queue ?? this.db.getResumeQueue(id);
 
     this.db.setStatus(id, "running", false);
@@ -379,6 +381,7 @@ export class CrawlController {
 
   stop(): void {
     this.crawler?.stop();
+    this.psiWorker?.abort("crawl stopped");
   }
 
   pauseResume(): void {
@@ -414,6 +417,7 @@ export class CrawlController {
 
   dispose(): void {
     this.crawler?.stop();
+    this.psiWorker?.abort("disposed");
     this.stopFlushTimer();
     this.statusBar.setIdle();
     void this.closeRenderer();
@@ -443,6 +447,19 @@ export class CrawlController {
     this.pendingUrls.set(result.url, result);
     if (result.javascriptRendered) {
       this.jsRenderedByUrl.set(result.url, true);
+    }
+    // Stream into PSI worker as soon as a successful URL is crawled, so PSI
+    // runs in parallel with the rest of the crawl instead of waiting for `done`.
+    if (
+      this.psiWorker &&
+      result.statusCode !== null &&
+      result.statusCode >= 200 &&
+      result.statusCode < 400 &&
+      this.psiTotalExpected <
+        (this.getWsConfig().get<number>("pagespeed.urlLimit") ?? 50)
+    ) {
+      this.psiTotalExpected++;
+      this.psiWorker.enqueue(result.url);
     }
   }
 
@@ -523,10 +540,13 @@ export class CrawlController {
       this.notifyCrawlsChanged();
     }
 
-    void this.maybeRunPageSpeed();
+    void this.drainPsiWorker();
   }
 
-  private async maybeRunPageSpeed(): Promise<void> {
+  /** Create the streaming PSI worker before the crawl starts, if enabled + key configured. */
+  private async maybeCreatePsiWorker(): Promise<void> {
+    this.psiWorker = null;
+    this.psiTotalExpected = 0;
     const cfg = this.getWsConfig();
     if (!cfg.get<boolean>("pagespeed.enabled")) {
       return;
@@ -538,7 +558,6 @@ export class CrawlController {
       );
       return;
     }
-    const limit = cfg.get<number>("pagespeed.urlLimit") ?? 50;
     const strategyChoice = cfg.get<string>("pagespeed.strategy") ?? "mobile";
     const strategies: PsiStrategy[] =
       strategyChoice === "both"
@@ -546,32 +565,38 @@ export class CrawlController {
         : strategyChoice === "desktop"
           ? ["desktop"]
           : ["mobile"];
+    const concurrency = cfg.get<number>("pagespeed.concurrency") ?? 2;
 
-    const urls = this.urlBuf
-      .snapshot()
-      .filter(
-        (u) =>
-          u.statusCode !== null && u.statusCode >= 200 && u.statusCode < 400,
-      )
-      .map((u) => u.url);
-
-    this.psiAbort = { aborted: false };
     this.pagespeedRows = [];
-
-    const summary = await runBatch(urls, {
+    this.psiWorker = new PsiWorker({
       apiKey: key,
       strategies,
-      limit,
-      signal: this.psiAbort,
+      concurrency,
       onResult: (row) => {
         this.pagespeedRows.push(row);
         this.getBus()?.post({ type: "pagespeed:batch", rows: [row] });
+        if (this.db && this.crawlId !== null) {
+          try {
+            this.db.savePageSpeed(this.crawlId, [row]);
+          } catch (err) {
+            this.logDbError("savePageSpeed", err);
+          }
+        }
       },
       onAbort: (reason) => {
         void vscode.window.showErrorMessage(`SafiCrawl: ${reason}`);
       },
     });
+  }
 
+  /** Drain the PSI worker after the crawl finishes. Emits pagespeed:done when complete. */
+  private async drainPsiWorker(): Promise<void> {
+    const worker = this.psiWorker;
+    if (!worker) {
+      return;
+    }
+    const summary = await worker.drain();
+    this.psiWorker = null;
     this.getBus()?.post({
       type: "pagespeed:done",
       analyzed: summary.analyzed,
