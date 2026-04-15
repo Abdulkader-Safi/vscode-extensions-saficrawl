@@ -88,6 +88,13 @@ export async function activate(
       case "openPlaywrightDocs":
         await vscode.commands.executeCommand("SafiCrawl.openPlaywrightDocs");
         break;
+      case "openExternal":
+        try {
+          await vscode.env.openExternal(vscode.Uri.parse(msg.url));
+        } catch (err) {
+          notify("error", err instanceof Error ? err.message : String(err));
+        }
+        break;
       case "setPageSpeedKey":
         await vscode.commands.executeCommand("SafiCrawl.setPageSpeedKey");
         break;

@@ -111,6 +111,7 @@ export type WebviewToHost =
   | { type: "openPlaywrightDocs" }
   | { type: "setPageSpeedKey" }
   | { type: "clearPageSpeedKey" }
+  | { type: "openExternal"; url: string }
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
 
 export type Message = HostToWebview | WebviewToHost;

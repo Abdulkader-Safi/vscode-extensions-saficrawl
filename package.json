@@ -400,7 +400,7 @@
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vscode-test",
-    "test:engine": "tsc -p . --outDir out && mocha"
+    "test:engine": "tsc -p tsconfig.test.json --outDir out && mocha"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.3",
@@ -428,15 +428,16 @@
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.10.9",
-    "better-sqlite3": "^11.5.0",
+    "@types/d3-force": "^3.0.10",
     "cheerio": "^1.0.0",
+    "d3-force": "^3.0.0",
     "fast-xml-parser": "^4.5.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-force-graph-2d": "^1.29.1",
     "robots-parser": "^3.0.1",
     "sql.js": "^1.14.1",
     "undici": "^6.21.0",
-    "vis-network": "^9.1.9",
     "zustand": "^5.0.2"
   }
 }
