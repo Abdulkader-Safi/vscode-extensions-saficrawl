@@ -1,5 +1,7 @@
 const esbuild = require("esbuild");
 const { spawn } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 
 const production = process.argv.includes("--production");
 const watch = process.argv.includes("--watch");
@@ -18,7 +20,7 @@ const esbuildProblemMatcherPlugin = {
       result.errors.forEach(({ text, location }) => {
         console.error(`✘ [ERROR] ${text}`);
         console.error(
-          `    ${location.file}:${location.line}:${location.column}:`
+          `    ${location.file}:${location.line}:${location.column}:`,
         );
       });
       console.log("[watch] build finished");
@@ -69,6 +71,26 @@ const postcssPlugin = {
   },
 };
 
+const copyAssetsPlugin = {
+  name: "copy-assets",
+  setup(build) {
+    build.onEnd(() => {
+      fs.mkdirSync("dist", { recursive: true });
+      const schemaSrc = path.join("src", "storage", "schema.sql");
+      const schemaDst = path.join("dist", "schema.sql");
+      if (fs.existsSync(schemaSrc)) {
+        fs.copyFileSync(schemaSrc, schemaDst);
+      }
+      // sql.js wasm binary.
+      const wasmSrc = path.join("node_modules", "sql.js", "dist", "sql-wasm.wasm");
+      const wasmDst = path.join("dist", "sql-wasm.wasm");
+      if (fs.existsSync(wasmSrc)) {
+        fs.copyFileSync(wasmSrc, wasmDst);
+      }
+    });
+  },
+};
+
 async function main() {
   // Build extension
   const extensionCtx = await esbuild.context({
@@ -80,9 +102,9 @@ async function main() {
     sourcesContent: false,
     platform: "node",
     outfile: "dist/extension.js",
-    external: ["vscode", "better-sqlite3", "playwright"],
+    external: ["vscode", "sql.js", "playwright"],
     logLevel: "silent",
-    plugins: [esbuildProblemMatcherPlugin],
+    plugins: [esbuildProblemMatcherPlugin, copyAssetsPlugin],
   });
 
   // Build webview

@@ -1,29 +1,56 @@
 import * as vscode from "vscode";
+import * as path from "node:path";
 import { SafiCrawlPanel } from "./WebviewProvider";
 import { StatusBar } from "./ui/statusBar";
 import { SavedCrawlsProvider } from "./ui/sidebar";
 import { CrawlController } from "./controller/CrawlController";
 import { detectPlaywright } from "./engine/playwrightLoader";
+import { CrawlDb } from "./storage/crawlDb";
 import type { WebviewToHost } from "./types/messages";
 
 const PSI_SECRET_KEY = "saficrawl.pagespeed.apiKey";
 const PLAYWRIGHT_DOCS_URL = "https://playwright.dev/docs/intro";
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(
+  context: vscode.ExtensionContext,
+): Promise<void> {
   const statusBar = new StatusBar();
   const sidebar = new SavedCrawlsProvider();
+
+  // sql.js-backed persistence in globalStorage. No native module → works on any VS Code/Electron version.
+  let db: CrawlDb | null = null;
+  try {
+    const dbPath = path.join(context.globalStorageUri.fsPath, "crawls.sqlite");
+    db = await CrawlDb.open(dbPath);
+    const recovered = db.recoverInterrupted();
+    if (recovered.length > 0) {
+      void vscode.window.showInformationMessage(
+        `SafiCrawl: Recovered ${recovered.length} interrupted crawl(s) from the previous session.`,
+      );
+    }
+  } catch (err) {
+    void vscode.window.showWarningMessage(
+      `SafiCrawl: Persistence disabled (${err instanceof Error ? err.message : String(err)}).`,
+    );
+    db = null;
+  }
+  sidebar.setDb(db);
+  const dbRef = db;
 
   const controller = new CrawlController(
     () => SafiCrawlPanel.current?.bus ?? null,
     statusBar,
     () => vscode.workspace.getConfiguration("SafiCrawl"),
     async () => context.secrets.get(PSI_SECRET_KEY),
+    db,
   );
+  controller.setOnCrawlsChanged(() => sidebar.refresh());
 
   context.subscriptions.push(
     statusBar,
     vscode.window.registerTreeDataProvider("saficrawl.sidebar", sidebar),
     { dispose: () => controller.dispose() },
+    { dispose: () => dbRef?.close() },
   );
 
   const handleWebviewMessage = async (msg: WebviewToHost): Promise<void> => {
@@ -71,12 +98,30 @@ export function activate(context: vscode.ExtensionContext): void {
         await vscode.commands.executeCommand("SafiCrawl.installBrowsers");
         break;
       case "crawl:load":
+        try {
+          controller.loadSaved(msg.id);
+        } catch (err) {
+          notify("error", err instanceof Error ? err.message : String(err));
+        }
+        break;
       case "crawl:resume":
+        try {
+          await controller.resume(msg.id);
+        } catch (err) {
+          notify("error", err instanceof Error ? err.message : String(err));
+        }
+        break;
       case "crawl:archive":
+        controller.archive(msg.id);
+        break;
       case "crawl:delete":
-      case "export":
+        controller.remove(msg.id);
+        break;
       case "saved:refresh":
-        notify("info", `"${msg.type}" will be wired in a later milestone.`);
+        sidebar.refresh();
+        break;
+      case "export":
+        notify("info", `"${msg.type}" will be wired in M6.`);
         break;
     }
   };
@@ -224,7 +269,9 @@ export function activate(context: vscode.ExtensionContext): void {
         password: true,
         ignoreFocusOut: true,
       });
-      if (!key) {return;}
+      if (!key) {
+        return;
+      }
       await context.secrets.store(PSI_SECRET_KEY, key.trim());
       await pushEnvironment();
       notify("info", "PageSpeed API key saved.");
@@ -234,6 +281,76 @@ export function activate(context: vscode.ExtensionContext): void {
       await pushEnvironment();
       notify("info", "PageSpeed API key cleared.");
     }),
+    vscode.commands.registerCommand("SafiCrawl.refreshSidebar", () =>
+      sidebar.refresh(),
+    ),
+    vscode.commands.registerCommand(
+      "SafiCrawl.loadFromTree",
+      (arg: number | { crawl?: { id: number } }) => {
+        const id = typeof arg === "number" ? arg : arg?.crawl?.id;
+        if (typeof id !== "number") {
+          return;
+        }
+        openPanel();
+        try {
+          controller.loadSaved(id);
+        } catch (err) {
+          notify("error", err instanceof Error ? err.message : String(err));
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
+      "SafiCrawl.resumeFromTree",
+      async (arg: { crawl?: { id: number } }) => {
+        const id = arg?.crawl?.id;
+        if (typeof id !== "number") {
+          return;
+        }
+        openPanel();
+        try {
+          await controller.resume(id);
+        } catch (err) {
+          notify("error", err instanceof Error ? err.message : String(err));
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
+      "SafiCrawl.archiveFromTree",
+      (arg: { crawl?: { id: number } }) => {
+        const id = arg?.crawl?.id;
+        if (typeof id !== "number") {
+          return;
+        }
+        controller.archive(id);
+      },
+    ),
+    vscode.commands.registerCommand(
+      "SafiCrawl.unarchiveFromTree",
+      (arg: { crawl?: { id: number } }) => {
+        const id = arg?.crawl?.id;
+        if (typeof id !== "number") {
+          return;
+        }
+        controller.unarchive(id);
+      },
+    ),
+    vscode.commands.registerCommand(
+      "SafiCrawl.deleteFromTree",
+      async (arg: { crawl?: { id: number; baseUrl: string } }) => {
+        const id = arg?.crawl?.id;
+        if (typeof id !== "number") {
+          return;
+        }
+        const confirm = await vscode.window.showWarningMessage(
+          `Delete saved crawl "${arg?.crawl?.baseUrl}"? This cannot be undone.`,
+          { modal: true },
+          "Delete",
+        );
+        if (confirm === "Delete") {
+          controller.remove(id);
+        }
+      },
+    ),
   );
 
   context.subscriptions.push(

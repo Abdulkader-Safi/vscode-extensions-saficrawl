@@ -153,6 +153,62 @@ export class Crawler extends CrawlerEvents {
     this.resumeInternal();
   }
 
+  /** Returns the visited set + pending queue for resume/checkpoint. */
+  getCheckpoint(): { visited: string[]; queue: Array<[string, number]> } {
+    return {
+      visited: [...this.visited],
+      queue: this.queue.map((pair) => [pair[0], pair[1]] as [string, number]),
+    };
+  }
+
+  /** Preload visited + queue and start without re-seeding the seed URL. Used for resume. */
+  async startWithState(
+    baseUrl: string,
+    visited: Iterable<string>,
+    pendingQueue: Iterable<[string, number]>,
+  ): Promise<void> {
+    if (this.status === "running" || this.status === "paused") {
+      throw new Error("Crawler already running");
+    }
+    const seed = normalizeUrl(baseUrl);
+    if (!seed) {
+      throw new Error(`Invalid seed URL: ${baseUrl}`);
+    }
+
+    this.reset();
+    this.baseUrl = seed;
+    this.baseDomain = extractDomain(seed);
+    this.http = new HttpClient(this.config);
+    this.rateLimiter = new RateLimiter(this.config.delaySec);
+    this.robots = await this.fetchRobots(seed);
+
+    for (const v of visited) {
+      this.visited.add(v);
+    }
+    for (const [url, depth] of pendingQueue) {
+      if (!this.visited.has(url)) {
+        this.queue.push([url, depth]);
+      }
+    }
+
+    this.startedAt = Date.now();
+    this.status = "running";
+    this.startStatsTicker();
+
+    try {
+      await this.runLoop();
+    } catch (err) {
+      this.status = "error";
+      this.emit("error", { url: this.baseUrl, error: errorMessage(err) });
+    } finally {
+      this.stopStatsTicker();
+      await this.http?.close();
+      this.http = null;
+      this.status = this.stopSignal ? "completed" : "completed";
+      this.emit("done", this.snapshot());
+    }
+  }
+
   private resumeInternal(): void {
     this.pauseResolve?.();
     this.pauseResolve = null;

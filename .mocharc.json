@@ -1,6 +1,6 @@
 {
   "ui": "tdd",
-  "spec": "out/engine/__tests__/**/*.test.js",
+  "spec": "out/**/__tests__/**/*.test.js",
   "timeout": 10000,
   "reporter": "spec"
 }

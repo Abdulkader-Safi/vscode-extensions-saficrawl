@@ -64,6 +64,9 @@ export const VisualizationPage: React.FC = () => {
       const match = urls.find((u) => u.url === first);
       setSelected(match ?? null);
     });
+    network.on("stabilizationIterationsDone", () => {
+      network.setOptions({ physics: { enabled: false } });
+    });
     networkRef.current = network;
     return () => {
       network.destroy();
@@ -73,15 +76,49 @@ export const VisualizationPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!nodeDsRef.current || !edgeDsRef.current) return;
-    nodeDsRef.current.clear();
-    nodeDsRef.current.add(nodes as unknown as Array<{ id: string }>);
-    edgeDsRef.current.clear();
-    edgeDsRef.current.add(edges as unknown as Array<{ id: string }>);
-  }, [nodes, edges]);
+    const nd = nodeDsRef.current;
+    const ed = edgeDsRef.current;
+    const network = networkRef.current;
+    if (!nd || !ed || !network) return;
+
+    const existingNodeIds = new Set(nd.getIds().map(String));
+    const incomingNodeIds = new Set(nodes.map((n) => n.id));
+    const addedNodes = nodes.filter((n) => !existingNodeIds.has(n.id));
+    const removedNodeIds = [...existingNodeIds].filter(
+      (id) => !incomingNodeIds.has(id),
+    );
+
+    const existingEdgeIds = new Set(ed.getIds().map(String));
+    const incomingEdgeIds = new Set(edges.map((e) => e.id));
+    const addedEdges = edges.filter((e) => !existingEdgeIds.has(e.id));
+    const removedEdgeIds = [...existingEdgeIds].filter(
+      (id) => !incomingEdgeIds.has(id),
+    );
+
+    if (removedNodeIds.length) nd.remove(removedNodeIds);
+    if (addedNodes.length)
+      nd.add(addedNodes as unknown as Array<{ id: string }>);
+    if (removedEdgeIds.length) ed.remove(removedEdgeIds);
+    if (addedEdges.length)
+      ed.add(addedEdges as unknown as Array<{ id: string }>);
+
+    // Only re-stabilize when topology actually changed.
+    if (
+      addedNodes.length ||
+      removedNodeIds.length ||
+      addedEdges.length ||
+      removedEdgeIds.length
+    ) {
+      network.setOptions({ physics: { enabled: layout === "cose" } });
+      network.stabilize(80);
+    }
+  }, [nodes, edges, layout]);
 
   useEffect(() => {
-    networkRef.current?.setOptions(optionsForLayout(layout));
+    const network = networkRef.current;
+    if (!network) return;
+    network.setOptions(optionsForLayout(layout));
+    if (layout === "cose") network.stabilize(120);
   }, [layout]);
 
   const inbound = useMemo(
@@ -205,7 +242,29 @@ export const VisualizationPage: React.FC = () => {
 function optionsForLayout(layout: Layout): Options {
   const common: Options = {
     interaction: { hover: true, dragNodes: true, zoomView: true },
-    physics: { enabled: layout === "cose" },
+    physics:
+      layout === "cose"
+        ? {
+            enabled: true,
+            solver: "barnesHut",
+            barnesHut: {
+              gravitationalConstant: -8000,
+              centralGravity: 0.3,
+              springLength: 120,
+              springConstant: 0.04,
+              damping: 0.9,
+              avoidOverlap: 0.4,
+            },
+            stabilization: {
+              enabled: true,
+              iterations: 150,
+              updateInterval: 25,
+              fit: true,
+            },
+            maxVelocity: 40,
+            timestep: 0.35,
+          }
+        : { enabled: false },
     nodes: {
       shape: "dot",
       size: 12,

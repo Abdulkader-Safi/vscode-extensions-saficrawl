@@ -1,6 +1,5 @@
 import React from "react";
 import { useStore } from "../store";
-import { LeftRail } from "./LeftRail";
 import { TabStrip } from "./TabStrip";
 import { FilterBar } from "./FilterBar";
 import { StatusBarBottom } from "./StatusBarBottom";
@@ -18,16 +17,13 @@ export const AppShell: React.FC = () => {
   const activeTab = useStore((s) => s.activeTab);
 
   return (
-    <div className="flex flex-row w-screen h-screen">
-      <LeftRail />
-      <div className="flex flex-col flex-1 min-w-0">
-        <TabStrip />
-        <FilterBar />
-        <main className="flex-1 min-h-0 overflow-auto">
-          {renderTab(activeTab)}
-        </main>
-        <StatusBarBottom />
-      </div>
+    <div className="flex flex-col w-screen h-screen">
+      <TabStrip />
+      <FilterBar />
+      <main className="flex-1 min-h-0 overflow-auto">
+        {renderTab(activeTab)}
+      </main>
+      <StatusBarBottom />
     </div>
   );
 };

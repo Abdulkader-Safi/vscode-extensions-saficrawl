@@ -89,6 +89,36 @@
       {
         "command": "SafiCrawl.clearPageSpeedKey",
         "title": "SafiCrawl: Clear PageSpeed API Key"
+      },
+      {
+        "command": "SafiCrawl.refreshSidebar",
+        "title": "SafiCrawl: Refresh Saved Crawls",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "SafiCrawl.loadFromTree",
+        "title": "Load",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "SafiCrawl.resumeFromTree",
+        "title": "Resume",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "SafiCrawl.archiveFromTree",
+        "title": "Archive",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "SafiCrawl.unarchiveFromTree",
+        "title": "Unarchive",
+        "icon": "$(package)"
+      },
+      {
+        "command": "SafiCrawl.deleteFromTree",
+        "title": "Delete…",
+        "icon": "$(trash)"
       }
     ],
     "viewsContainers": {
@@ -121,6 +151,33 @@
           "command": "SafiCrawl.dashboard",
           "when": "view == saficrawl.sidebar",
           "group": "navigation@2"
+        },
+        {
+          "command": "SafiCrawl.refreshSidebar",
+          "when": "view == saficrawl.sidebar",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "SafiCrawl.resumeFromTree",
+          "when": "view == saficrawl.sidebar && viewItem =~ /resumable/",
+          "group": "inline@1"
+        },
+        {
+          "command": "SafiCrawl.archiveFromTree",
+          "when": "view == saficrawl.sidebar && viewItem =~ /saficrawl.saved/ && !(viewItem =~ /archived/)",
+          "group": "1_manage@1"
+        },
+        {
+          "command": "SafiCrawl.unarchiveFromTree",
+          "when": "view == saficrawl.sidebar && viewItem =~ /archived/",
+          "group": "1_manage@1"
+        },
+        {
+          "command": "SafiCrawl.deleteFromTree",
+          "when": "view == saficrawl.sidebar && viewItem =~ /saficrawl.saved/",
+          "group": "1_manage@2"
         }
       ]
     },
@@ -339,11 +396,14 @@
     "test:engine": "tsc -p . --outDir out && mocha"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
     "@tailwindcss/postcss": "^4.1.17",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "@types/react": "^19.2.6",
     "@types/react-dom": "^19.2.3",
+    "@types/sql.js": "^1.4.11",
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^8.45.0",
     "@typescript-eslint/parser": "^8.45.0",
@@ -367,6 +427,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "robots-parser": "^3.0.1",
+    "sql.js": "^1.14.1",
     "undici": "^6.21.0",
     "vis-network": "^9.1.9",
     "zustand": "^5.0.2"

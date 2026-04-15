@@ -23,6 +23,7 @@ import { RingBuffer } from "./buffers";
 import { hotApplicablePatch, readConfig } from "./configSnapshot";
 import { runBatch } from "../pagespeed/psiClient";
 import type { CwvRow, PsiStrategy } from "../pagespeed/types";
+import type { CrawlDb, LoadedCrawl } from "../storage/crawlDb";
 
 const URL_BUF_CAP = 10_000;
 const LINK_BUF_CAP = 50_000;
@@ -57,13 +58,25 @@ export class CrawlController {
   private psiAbort = { aborted: false };
   private pagespeedRows: CwvRow[] = [];
 
+  private readonly jsRenderedByUrl = new Map<string, boolean>();
+  private onCrawlsChanged: (() => void) | null = null;
+
   constructor(
     private readonly getBus: BusGetter,
     private readonly statusBar: StatusBar,
     private readonly getWsConfig: () => vscode.WorkspaceConfiguration,
     private readonly getPsiKey: PsiKeyGetter = async () => undefined,
+    private readonly db: CrawlDb | null = null,
   ) {
     this.config = readConfig(this.getWsConfig());
+  }
+
+  setOnCrawlsChanged(cb: () => void): void {
+    this.onCrawlsChanged = cb;
+  }
+
+  private notifyCrawlsChanged(): void {
+    this.onCrawlsChanged?.();
   }
 
   getPagespeedSnapshot(): CwvRow[] {
@@ -117,7 +130,8 @@ export class CrawlController {
     this.config = readConfig(this.getWsConfig());
     this.reset();
     this.baseUrl = seedUrl;
-    this.crawlId = null;
+    this.crawlId = this.db?.createCrawl(seedUrl, this.config) ?? null;
+    this.notifyCrawlsChanged();
 
     this.jsRenderer = await this.tryCreateRenderer();
 
@@ -131,7 +145,7 @@ export class CrawlController {
     this.getBus()?.post({
       type: "crawl:started",
       baseUrl: seedUrl,
-      crawlId: null,
+      crawlId: this.crawlId,
     });
     this.startFlushTimer();
 
@@ -140,14 +154,175 @@ export class CrawlController {
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         this.getBus()?.post({ type: "crawl:error", message: msg });
+        if (this.db && this.crawlId !== null) {
+          this.db.setStatus(this.crawlId, "error", false);
+          this.notifyCrawlsChanged();
+        }
       })
       .finally(() => {
         void this.closeRenderer();
       });
   }
 
+  /** Load a previously-saved crawl into the webview without running the engine. */
+  loadSaved(id: number): LoadedCrawl | null {
+    if (!this.db) {
+      return null;
+    }
+    const loaded = this.db.loadCrawl(id);
+    if (!loaded) {
+      return null;
+    }
+
+    this.reset();
+    this.baseUrl = loaded.crawl.baseUrl;
+    this.crawlId = id;
+    this.urlBuf.pushMany(loaded.urls);
+    this.linkBuf.pushMany(loaded.links);
+    this.issueBuf.pushMany(loaded.issues);
+    this.pagespeedRows = loaded.pagespeed.slice();
+    for (const issue of loaded.issues) {
+      this.issuesByUrl.set(
+        issue.url,
+        (this.issuesByUrl.get(issue.url) ?? 0) + 1,
+      );
+    }
+
+    this.lastStats = {
+      crawled: loaded.urls.length,
+      queued: loaded.checkpoint?.queue.length ?? 0,
+      maxUrls: loaded.crawl.config.maxUrls,
+      urlsPerSec: 0,
+      elapsedMs:
+        (loaded.crawl.completedAt ?? loaded.crawl.startedAt) -
+        loaded.crawl.startedAt,
+      errors: loaded.crawl.errorCount,
+      status:
+        loaded.crawl.status === "completed"
+          ? "completed"
+          : loaded.crawl.status === "error"
+            ? "error"
+            : "idle",
+    };
+
+    const bus = this.getBus();
+    if (bus) {
+      bus.post({
+        type: "crawl:started",
+        baseUrl: loaded.crawl.baseUrl,
+        crawlId: id,
+      });
+      bus.post({ type: "url:batch", rows: loaded.urls });
+      bus.post({ type: "issue:batch", rows: loaded.issues });
+      bus.post({ type: "link:batch", rows: loaded.links });
+      if (loaded.pagespeed.length > 0) {
+        bus.post({
+          type: "pagespeed:batch",
+          rows: loaded.pagespeed.map((r) => ({ ...r })),
+        });
+      }
+      bus.post({ type: "stats:tick", stats: this.lastStats });
+    }
+    return loaded;
+  }
+
+  async resume(id: number): Promise<void> {
+    if (!this.db) {
+      throw new Error("Persistence is not enabled");
+    }
+    const loaded = this.db.loadCrawl(id);
+    if (!loaded) {
+      throw new Error(`Crawl ${id} not found`);
+    }
+    if (!loaded.crawl.canResume) {
+      throw new Error(`Crawl ${id} cannot be resumed`);
+    }
+    if (
+      this.crawler &&
+      (this.lastStats.status === "running" ||
+        this.lastStats.status === "paused")
+    ) {
+      throw new Error("Another crawl is running. Stop it first.");
+    }
+
+    this.config = loaded.crawl.config;
+    this.reset();
+    this.baseUrl = loaded.crawl.baseUrl;
+    this.crawlId = id;
+
+    // Hydrate buffers so the webview reflects prior state immediately.
+    this.urlBuf.pushMany(loaded.urls);
+    this.linkBuf.pushMany(loaded.links);
+    this.issueBuf.pushMany(loaded.issues);
+    this.pagespeedRows = loaded.pagespeed.slice();
+    for (const issue of loaded.issues) {
+      this.issuesByUrl.set(
+        issue.url,
+        (this.issuesByUrl.get(issue.url) ?? 0) + 1,
+      );
+    }
+
+    this.jsRenderer = await this.tryCreateRenderer();
+
+    const crawler = new Crawler({
+      config: this.config,
+      jsRenderer: this.jsRenderer,
+    });
+    this.crawler = crawler;
+    this.bindCrawler(crawler);
+
+    // Build the queue: prefer checkpoint, fall back to the persisted queue table.
+    const visited = new Set(loaded.urls.map((u) => u.url));
+    const queue: Array<[string, number]> =
+      loaded.checkpoint?.queue ?? this.db.getResumeQueue(id);
+
+    this.db.setStatus(id, "running", false);
+    this.notifyCrawlsChanged();
+
+    this.getBus()?.post({
+      type: "crawl:started",
+      baseUrl: loaded.crawl.baseUrl,
+      crawlId: id,
+    });
+    this.startFlushTimer();
+
+    crawler
+      .startWithState(loaded.crawl.baseUrl, visited, queue)
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.getBus()?.post({ type: "crawl:error", message: msg });
+        if (this.db && this.crawlId !== null) {
+          this.db.setStatus(this.crawlId, "error", true);
+          this.notifyCrawlsChanged();
+        }
+      })
+      .finally(() => {
+        void this.closeRenderer();
+      });
+  }
+
+  archive(id: number): void {
+    this.db?.archiveCrawl(id);
+    this.notifyCrawlsChanged();
+  }
+
+  unarchive(id: number): void {
+    this.db?.unarchiveCrawl(id);
+    this.notifyCrawlsChanged();
+  }
+
+  remove(id: number): void {
+    this.db?.deleteCrawl(id);
+    if (this.crawlId === id) {
+      this.crawlId = null;
+    }
+    this.notifyCrawlsChanged();
+  }
+
   private async tryCreateRenderer(): Promise<JsRenderer | null> {
-    if (!this.config.jsEnabled) {return null;}
+    if (!this.config.jsEnabled) {
+      return null;
+    }
     if (vscode.env.uiKind === vscode.UIKind.Web) {
       void vscode.window.showWarningMessage(
         "SafiCrawl: JavaScript rendering requires the desktop VS Code. Disabled for this session.",
@@ -166,8 +341,9 @@ export class CrawlController {
           "Open Install Instructions",
         )
         .then((pick) => {
-          if (pick)
-            {void vscode.commands.executeCommand("SafiCrawl.openPlaywrightDocs");}
+          if (pick) {
+            void vscode.commands.executeCommand("SafiCrawl.openPlaywrightDocs");
+          }
         });
       return null;
     }
@@ -265,6 +441,9 @@ export class CrawlController {
 
   private onUrl(result: CrawlResult): void {
     this.pendingUrls.set(result.url, result);
+    if (result.javascriptRendered) {
+      this.jsRenderedByUrl.set(result.url, true);
+    }
   }
 
   private onIssue(issue: Issue): void {
@@ -326,12 +505,32 @@ export class CrawlController {
     this.getBus()?.post({ type: "crawl:done", stats });
     this.getBus()?.post({ type: "stats:tick", stats });
     this.stopFlushTimer();
+
+    if (this.db && this.crawlId !== null && this.crawler) {
+      const checkpoint = this.crawler.getCheckpoint();
+      const pendingRemains = checkpoint.queue.length > 0;
+      try {
+        this.db.saveQueue(this.crawlId, checkpoint.queue);
+        this.db.saveCheckpoint(this.crawlId, checkpoint);
+        this.db.setStatus(
+          this.crawlId,
+          pendingRemains ? "interrupted" : "completed",
+          pendingRemains,
+        );
+      } catch (err) {
+        this.logDbError("finalize", err);
+      }
+      this.notifyCrawlsChanged();
+    }
+
     void this.maybeRunPageSpeed();
   }
 
   private async maybeRunPageSpeed(): Promise<void> {
     const cfg = this.getWsConfig();
-    if (!cfg.get<boolean>("pagespeed.enabled")) {return;}
+    if (!cfg.get<boolean>("pagespeed.enabled")) {
+      return;
+    }
     const key = await this.getPsiKey();
     if (!key) {
       void vscode.window.showWarningMessage(
@@ -412,6 +611,13 @@ export class CrawlController {
       flushInChunks(rows, BATCH_SIZE, (chunk) =>
         bus?.post({ type: "url:batch", rows: chunk }),
       );
+      if (this.db && this.crawlId !== null) {
+        try {
+          this.db.saveUrls(this.crawlId, rows, this.jsRenderedByUrl);
+        } catch (err) {
+          this.logDbError("saveUrls", err);
+        }
+      }
     }
 
     if (this.pendingIssues.length > 0) {
@@ -420,6 +626,13 @@ export class CrawlController {
       flushInChunks(rows, BATCH_SIZE, (chunk) =>
         bus?.post({ type: "issue:batch", rows: chunk }),
       );
+      if (this.db && this.crawlId !== null) {
+        try {
+          this.db.saveIssues(this.crawlId, rows);
+        } catch (err) {
+          this.logDbError("saveIssues", err);
+        }
+      }
     }
 
     if (this.pendingLinks.length > 0) {
@@ -428,7 +641,20 @@ export class CrawlController {
       flushInChunks(rows, BATCH_SIZE, (chunk) =>
         bus?.post({ type: "link:batch", rows: chunk }),
       );
+      if (this.db && this.crawlId !== null) {
+        try {
+          this.db.saveLinks(this.crawlId, rows);
+        } catch (err) {
+          this.logDbError("saveLinks", err);
+        }
+      }
     }
+  }
+
+  private logDbError(label: string, err: unknown): void {
+    console.error(
+      `[SafiCrawl DB] ${label}: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   private reset(): void {
@@ -439,6 +665,8 @@ export class CrawlController {
     this.pendingLinks.length = 0;
     this.pendingIssues.length = 0;
     this.issuesByUrl.clear();
+    this.jsRenderedByUrl.clear();
+    this.pagespeedRows = [];
     this.lastStats = makeIdleStats();
     this.lastWebviewStatsAt = 0;
   }
