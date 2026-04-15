@@ -1,5 +1,8 @@
 import React from "react";
 import { useStore } from "../store";
+import { send } from "../messaging";
+
+const AUTHOR_URL = "https://abdulkadersafi.com";
 
 export const StatusBarBottom: React.FC = () => {
   const stats = useStore((s) => s.stats);
@@ -23,12 +26,27 @@ export const StatusBarBottom: React.FC = () => {
   })();
 
   return (
-    <footer className="flex items-center justify-between px-3 py-1.5 text-[11px] text-[color:var(--color-sc-text-dim)] border-t border-[color:var(--color-sc-border)] bg-[color:var(--color-sc-bg-soft)]">
+    <footer className="flex items-center justify-between gap-3 px-3 py-1.5 text-[11px] text-[color:var(--color-sc-text-dim)] border-t border-[color:var(--color-sc-border)] bg-[color:var(--color-sc-bg-soft)]">
       <span className={statusClass(stats.status)}>{primary}</span>
-      <span className="text-[color:var(--color-sc-text-faint)]">
-        {env
-          ? `${env.isWebVsCode ? "Web" : "Desktop"} \u2022 Playwright ${env.playwrightInstalled ? "ready" : "off"}`
-          : "\u2026"}
+      <span className="flex items-center gap-3 text-[color:var(--color-sc-text-faint)]">
+        <span>
+          {env
+            ? `${env.isWebVsCode ? "Web" : "Desktop"} • Playwright ${env.playwrightInstalled ? "ready" : "off"}`
+            : "…"}
+        </span>
+        <span>
+          developed by{" "}
+          <a
+            href={AUTHOR_URL}
+            onClick={(e) => {
+              e.preventDefault();
+              send({ type: "openExternal", url: AUTHOR_URL });
+            }}
+            className="underline text-[color:var(--color-sc-text-dim)] hover:text-[color:var(--color-sc-text)]"
+          >
+            Abdulkader Safi
+          </a>
+        </span>
       </span>
     </footer>
   );

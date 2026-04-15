@@ -40,7 +40,7 @@ export const FilterBar: React.FC = () => {
       {urlFilterToUrl ? (
         <button
           onClick={() => focusUrl(null)}
-          className="px-2 py-1 text-xs rounded border border-[color:var(--color-sc-border)] text-[color:var(--color-sc-text-dim)] hover:text-[color:var(--color-sc-text)]"
+          className="px-2 py-1 text-xs rounded text-nowrap border border-[color:var(--color-sc-border)] text-[color:var(--color-sc-text-dim)] hover:text-[color:var(--color-sc-text)]"
           title="Clear URL filter"
         >
           Clear: {truncate(urlFilterToUrl, 40)} ✕
@@ -52,13 +52,13 @@ export const FilterBar: React.FC = () => {
           <>
             <button
               onClick={pauseResume}
-              className="px-2 py-1 text-xs rounded border border-[color:var(--color-sc-border)] hover:bg-[color:var(--color-sc-bg-raised)]"
+              className="px-2 py-1 text-xs text-nowrap rounded border border-[color:var(--color-sc-border)] hover:bg-[color:var(--color-sc-bg-raised)]"
             >
               {stats.status === "paused" ? "Resume" : "Pause"}
             </button>
             <button
               onClick={stopCrawl}
-              className="px-2 py-1 text-xs font-medium text-white rounded bg-[color:var(--color-sc-err)] hover:opacity-90"
+              className="px-2 py-1 text-nowrap text-xs font-medium text-white rounded bg-[color:var(--color-sc-err)] hover:opacity-90"
             >
               Stop
             </button>
@@ -68,7 +68,7 @@ export const FilterBar: React.FC = () => {
             {canContinue ? (
               <button
                 onClick={continueCrawl}
-                className="px-2 py-1 text-xs font-medium text-white rounded bg-[color:var(--color-sc-accent)] hover:bg-[color:var(--color-sc-accent-hover)]"
+                className="px-2 text-nowrap py-1 text-xs font-medium text-white rounded bg-[color:var(--color-sc-accent)] hover:bg-[color:var(--color-sc-accent-hover)]"
                 title="Resume crawling and PageSpeed from where this crawl stopped"
               >
                 Continue crawl

@@ -25,7 +25,7 @@ export const TabStrip: React.FC = () => {
   const tabs: Tab[] = historyGroup
     ? [
         ...TABS.slice(0, TABS.length - 1),
-        { id: "history", label: `History: ${historyGroup.domain}` },
+        { id: "history", label: "History" },
         TABS[TABS.length - 1],
       ]
     : TABS;

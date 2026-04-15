@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="img/logo.png" alt="SafiCrawl" width="160" />
+</p>
+
 # SafiCrawl
 
 **An in-editor website crawler and SEO auditing tool for Visual Studio Code.**

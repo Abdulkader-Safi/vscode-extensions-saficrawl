@@ -131,6 +131,13 @@ export const useStore = create<State & Actions>((set) => ({
             filters: { search: "", urlFilterToUrl: null },
             pagespeed: {},
             pageSpeedSummary: null,
+            // Loading a regular crawl closes the History context; otherwise
+            // the tab lingers and, if it was active, would render stale data
+            // from a different domain.
+            historyGroup: null,
+            historyPoints: null,
+            activeTab:
+              state.activeTab === "history" ? "overview" : state.activeTab,
           };
         case "crawl:done":
           return { stats: msg.stats };
