@@ -21,12 +21,20 @@ const TABS: Tab[] = [
 export const TabStrip: React.FC = () => {
   const activeTab = useStore((s) => s.activeTab);
   const setActiveTab = useStore((s) => s.setActiveTab);
+  const historyGroup = useStore((s) => s.historyGroup);
+  const tabs: Tab[] = historyGroup
+    ? [
+        ...TABS.slice(0, TABS.length - 1),
+        { id: "history", label: `History: ${historyGroup.domain}` },
+        TABS[TABS.length - 1],
+      ]
+    : TABS;
   return (
     <div
       role="tablist"
       className="flex gap-1 px-3 pt-2 border-b border-[color:var(--color-sc-border)] bg-[color:var(--color-sc-bg)]"
     >
-      {TABS.map((tab) => {
+      {tabs.map((tab) => {
         const active = activeTab === tab.id;
         return (
           <button

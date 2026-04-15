@@ -11,6 +11,7 @@ import { LinksPage } from "../pages/LinksPage";
 import { IssuesPage } from "../pages/IssuesPage";
 import { PageSpeedPage } from "../pages/PageSpeedPage";
 import { VisualizationPage } from "../pages/VisualizationPage";
+import { HistoryPage } from "../pages/HistoryPage";
 import { SettingsPage } from "../pages/SettingsPage";
 
 export const AppShell: React.FC = () => {
@@ -46,6 +47,8 @@ function renderTab(tab: string) {
       return <PageSpeedPage />;
     case "visualization":
       return <VisualizationPage />;
+    case "history":
+      return <HistoryPage />;
     case "settings":
       return <SettingsPage />;
     default:

@@ -92,7 +92,33 @@ export type HostToWebview =
       pageSpeedKeyConfigured: boolean;
     }
   | { type: "pagespeed:batch"; rows: CwvMessageRow[] }
-  | { type: "pagespeed:done"; analyzed: number; skipped: number };
+  | { type: "pagespeed:done"; analyzed: number; skipped: number }
+  | {
+      type: "domain:history:open";
+      domain: string;
+      crawlIds: number[];
+    }
+  | {
+      type: "domain:history";
+      domain: string;
+      points: DomainHistoryPoint[];
+    };
+
+export interface DomainHistoryPoint {
+  crawlId: number;
+  baseUrl: string;
+  startedAt: number;
+  completedAt: number | null;
+  status: CrawlStatus | "interrupted" | "stopping";
+  pagesCrawled: number;
+  totalIssues: number;
+  errors: number;
+  warnings: number;
+  notices: number;
+  engineErrors: number;
+  avgMobilePerf: number | null;
+  avgDesktopPerf: number | null;
+}
 
 /** Messages sent FROM the webview TO the extension host. */
 export type WebviewToHost =
@@ -103,6 +129,11 @@ export type WebviewToHost =
   | { type: "crawl:load"; id: number }
   | { type: "crawl:resume"; id: number }
   | { type: "crawl:continue" }
+  | {
+      type: "domain:history:request";
+      domain: string;
+      crawlIds: number[];
+    }
   | { type: "crawl:archive"; id: number }
   | { type: "crawl:delete"; id: number }
   | { type: "settings:get" }

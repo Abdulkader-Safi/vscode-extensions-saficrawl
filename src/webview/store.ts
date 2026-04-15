@@ -4,6 +4,7 @@ import { onMessage, send } from "./messaging";
 import type {
   CrawlStats,
   CwvMessageRow,
+  DomainHistoryPoint,
   HostToWebview,
   IssueRow,
   LinkRow,
@@ -19,7 +20,13 @@ export type TabId =
   | "issues"
   | "pagespeed"
   | "visualization"
+  | "history"
   | "settings";
+
+export interface HistoryGroup {
+  domain: string;
+  crawlIds: number[];
+}
 
 const MAX_URLS = 100_000;
 const MAX_LINKS = 500_000;
@@ -61,6 +68,8 @@ interface State {
   filters: Filters;
   pagespeed: Record<string, CwvMessageRow>;
   pageSpeedSummary: { analyzed: number; skipped: number } | null;
+  historyGroup: HistoryGroup | null;
+  historyPoints: DomainHistoryPoint[] | null;
 }
 
 interface Actions {
@@ -73,6 +82,7 @@ interface Actions {
   stopCrawl(): void;
   pauseResume(): void;
   continueCrawl(): void;
+  refreshHistory(): void;
   setPageSpeedKey(): void;
   clearPageSpeedKey(): void;
   openPlaywrightDocs(): void;
@@ -93,6 +103,8 @@ export const useStore = create<State & Actions>((set) => ({
   filters: { search: "", urlFilterToUrl: null },
   pagespeed: {},
   pageSpeedSummary: null,
+  historyGroup: null,
+  historyPoints: null,
 
   onMessage: (msg) =>
     set((state) => {
@@ -181,6 +193,25 @@ export const useStore = create<State & Actions>((set) => ({
           return {
             pageSpeedSummary: { analyzed: msg.analyzed, skipped: msg.skipped },
           };
+        case "domain:history:open":
+          send({
+            type: "domain:history:request",
+            domain: msg.domain,
+            crawlIds: msg.crawlIds,
+          });
+          return {
+            activeTab: "history",
+            historyGroup: { domain: msg.domain, crawlIds: msg.crawlIds },
+            historyPoints: null,
+          };
+        case "domain:history":
+          if (
+            state.historyGroup &&
+            state.historyGroup.domain === msg.domain
+          ) {
+            return { historyPoints: msg.points };
+          }
+          return {};
         default:
           return {};
       }
@@ -202,6 +233,16 @@ export const useStore = create<State & Actions>((set) => ({
   stopCrawl: () => send({ type: "crawl:stop" }),
   pauseResume: () => send({ type: "crawl:pauseResume" }),
   continueCrawl: () => send({ type: "crawl:continue" }),
+  refreshHistory: () => {
+    const g = useStore.getState().historyGroup;
+    if (g) {
+      send({
+        type: "domain:history:request",
+        domain: g.domain,
+        crawlIds: g.crawlIds,
+      });
+    }
+  },
   setPageSpeedKey: () => send({ type: "setPageSpeedKey" }),
   clearPageSpeedKey: () => send({ type: "clearPageSpeedKey" }),
   openPlaywrightDocs: () => send({ type: "openPlaywrightDocs" }),

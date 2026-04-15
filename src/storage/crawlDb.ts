@@ -36,6 +36,22 @@ export interface ResumeCheckpoint {
   queue: Array<[string, number] | [string, number, number]>;
 }
 
+export interface DomainHistoryPoint {
+  crawlId: number;
+  baseUrl: string;
+  startedAt: number;
+  completedAt: number | null;
+  status: StoredStatus;
+  pagesCrawled: number;
+  totalIssues: number;
+  errors: number;
+  warnings: number;
+  notices: number;
+  engineErrors: number;
+  avgMobilePerf: number | null;
+  avgDesktopPerf: number | null;
+}
+
 export interface LoadedCrawl {
   crawl: StoredCrawl;
   urls: UrlRow[];
@@ -512,6 +528,110 @@ export class CrawlDb {
             : Number(r.priority),
         ] as [string, number, number],
     );
+  }
+
+  /**
+   * Aggregate per-crawl metrics for the chart on the domain history tab.
+   * Splits issue totals by severity and averages PSI performance per strategy.
+   */
+  getDomainHistory(crawlIds: number[]): DomainHistoryPoint[] {
+    if (crawlIds.length === 0) {
+      return [];
+    }
+    const placeholders = crawlIds.map(() => "?").join(",");
+    const crawlRows = this.selectMany(
+      `SELECT id, base_url, status, started_at, completed_at, url_count, issue_count, error_count
+         FROM crawls
+        WHERE id IN (${placeholders})`,
+      crawlIds,
+    );
+    const issueRows = this.selectMany(
+      `SELECT crawl_id, type, COUNT(*) AS n
+         FROM crawl_issues
+        WHERE crawl_id IN (${placeholders})
+     GROUP BY crawl_id, type`,
+      crawlIds,
+    );
+    const psiRows = this.selectMany(
+      `SELECT crawl_id, strategy, AVG(performance) AS avg_perf
+         FROM crawl_pagespeed
+        WHERE crawl_id IN (${placeholders}) AND performance IS NOT NULL
+     GROUP BY crawl_id, strategy`,
+      crawlIds,
+    );
+
+    const issueByCrawl = new Map<
+      number,
+      { errors: number; warnings: number; notices: number }
+    >();
+    for (const r of issueRows) {
+      const id = Number(r.crawl_id);
+      const bucket = issueByCrawl.get(id) ?? {
+        errors: 0,
+        warnings: 0,
+        notices: 0,
+      };
+      const type = String(r.type);
+      const n = Number(r.n);
+      if (type === "error") {
+        bucket.errors = n;
+      } else if (type === "warning") {
+        bucket.warnings = n;
+      } else if (type === "info") {
+        bucket.notices = n;
+      }
+      issueByCrawl.set(id, bucket);
+    }
+
+    const psiByCrawl = new Map<
+      number,
+      { mobile: number | null; desktop: number | null }
+    >();
+    for (const r of psiRows) {
+      const id = Number(r.crawl_id);
+      const bucket = psiByCrawl.get(id) ?? { mobile: null, desktop: null };
+      const strategy = String(r.strategy);
+      const avg =
+        r.avg_perf === null || r.avg_perf === undefined
+          ? null
+          : Number(r.avg_perf) * 100;
+      if (strategy === "mobile") {
+        bucket.mobile = avg;
+      } else if (strategy === "desktop") {
+        bucket.desktop = avg;
+      }
+      psiByCrawl.set(id, bucket);
+    }
+
+    const points: DomainHistoryPoint[] = crawlRows.map((r) => {
+      const id = Number(r.id);
+      const issues = issueByCrawl.get(id) ?? {
+        errors: 0,
+        warnings: 0,
+        notices: 0,
+      };
+      const psi = psiByCrawl.get(id) ?? { mobile: null, desktop: null };
+      return {
+        crawlId: id,
+        baseUrl: String(r.base_url),
+        startedAt: Number(r.started_at),
+        completedAt:
+          r.completed_at === null || r.completed_at === undefined
+            ? null
+            : Number(r.completed_at),
+        status: r.status as StoredStatus,
+        pagesCrawled: Number(r.url_count),
+        totalIssues: Number(r.issue_count),
+        errors: issues.errors,
+        warnings: issues.warnings,
+        notices: issues.notices,
+        engineErrors: Number(r.error_count),
+        avgMobilePerf: psi.mobile,
+        avgDesktopPerf: psi.desktop,
+      };
+    });
+    points.sort((a, b) => a.startedAt - b.startedAt);
+    return points;
   }
 
   getVisitedUrls(id: number): string[] {

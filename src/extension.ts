@@ -125,6 +125,20 @@ export async function activate(
           notify("error", err instanceof Error ? err.message : String(err));
         }
         break;
+      case "domain:history:request":
+        if (dbRef) {
+          try {
+            const points = dbRef.getDomainHistory(msg.crawlIds);
+            SafiCrawlPanel.current?.bus.post({
+              type: "domain:history",
+              domain: msg.domain,
+              points,
+            });
+          } catch (err) {
+            notify("error", err instanceof Error ? err.message : String(err));
+          }
+        }
+        break;
       case "crawl:archive":
         controller.archive(msg.id);
         break;
@@ -346,6 +360,22 @@ export async function activate(
           return;
         }
         controller.unarchive(id);
+      },
+    ),
+    vscode.commands.registerCommand(
+      "SafiCrawl.openDomainHistory",
+      (arg: { domain?: string; crawlIds?: number[] }) => {
+        const domain = arg?.domain;
+        const crawlIds = arg?.crawlIds;
+        if (typeof domain !== "string" || !Array.isArray(crawlIds)) {
+          return;
+        }
+        openPanel();
+        SafiCrawlPanel.current?.bus.post({
+          type: "domain:history:open",
+          domain,
+          crawlIds,
+        });
       },
     ),
     vscode.commands.registerCommand(

@@ -1,6 +1,52 @@
 import * as vscode from "vscode";
 import type { CrawlDb, StoredCrawl } from "../storage/crawlDb";
 
+type SidebarNode = DomainGroupItem | SavedCrawlItem;
+
+/**
+ * Normalize a crawl's base URL to a grouping key. `www.x.com` and `x.com`
+ * collapse into `x.com`; other subdomains remain distinct. Falls back to
+ * the raw string on unparseable input so nothing ever disappears.
+ */
+export function domainKey(baseUrl: string): string {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host.startsWith("www.") ? host.slice(4) : host;
+  } catch {
+    return baseUrl.toLowerCase();
+  }
+}
+
+export class DomainGroupItem extends vscode.TreeItem {
+  constructor(
+    public readonly domain: string,
+    public readonly crawls: StoredCrawl[],
+  ) {
+    super(domain, vscode.TreeItemCollapsibleState.Collapsed);
+    const count = crawls.length;
+    this.description = `${count} run${count === 1 ? "" : "s"}`;
+    this.contextValue = "saficrawl.domaingroup";
+    this.iconPath = new vscode.ThemeIcon("folder");
+    this.command = {
+      command: "SafiCrawl.openDomainHistory",
+      title: "Open History",
+      arguments: [
+        {
+          domain,
+          crawlIds: crawls.map((c) => c.id),
+        },
+      ],
+    };
+    this.tooltip = new vscode.MarkdownString(
+      [
+        `**${domain}**`,
+        `${count} run${count === 1 ? "" : "s"}`,
+        `Latest: ${new Date(crawls[0]?.completedAt ?? crawls[0]?.startedAt ?? Date.now()).toLocaleString()}`,
+      ].join("\n\n"),
+    );
+  }
+}
+
 export class SavedCrawlItem extends vscode.TreeItem {
   constructor(public readonly crawl: StoredCrawl) {
     super(shortUrl(crawl.baseUrl), vscode.TreeItemCollapsibleState.None);
@@ -70,9 +116,9 @@ function contextFor(crawl: StoredCrawl): string {
   return parts.join(".");
 }
 
-export class SavedCrawlsProvider implements vscode.TreeDataProvider<SavedCrawlItem> {
+export class SavedCrawlsProvider implements vscode.TreeDataProvider<SidebarNode> {
   private _onDidChange = new vscode.EventEmitter<
-    SavedCrawlItem | undefined | void
+    SidebarNode | undefined | void
   >();
   readonly onDidChangeTreeData = this._onDidChange.event;
 
@@ -93,16 +139,40 @@ export class SavedCrawlsProvider implements vscode.TreeDataProvider<SavedCrawlIt
     this._onDidChange.fire();
   }
 
-  getTreeItem(element: SavedCrawlItem): vscode.TreeItem {
+  getTreeItem(element: SidebarNode): vscode.TreeItem {
     return element;
   }
 
-  getChildren(): SavedCrawlItem[] {
+  getChildren(element?: SidebarNode): SidebarNode[] {
     if (!this.db) {
       return [];
     }
-    return this.db
-      .listCrawls(this.showArchived)
-      .map((c) => new SavedCrawlItem(c));
+    if (element instanceof DomainGroupItem) {
+      return element.crawls.map((c) => new SavedCrawlItem(c));
+    }
+    if (element) {
+      return [];
+    }
+    const crawls = this.db.listCrawls(this.showArchived);
+    const groups = new Map<string, StoredCrawl[]>();
+    for (const c of crawls) {
+      const key = domainKey(c.baseUrl);
+      const bucket = groups.get(key);
+      if (bucket) {
+        bucket.push(c);
+      } else {
+        groups.set(key, [c]);
+      }
+    }
+    const out: DomainGroupItem[] = [];
+    for (const [domain, bucket] of groups) {
+      // listCrawls is already ordered by startedAt DESC, so each bucket is too.
+      out.push(new DomainGroupItem(domain, bucket));
+    }
+    // Keep groups sorted by their most recent run, descending.
+    out.sort(
+      (a, b) => (b.crawls[0]?.startedAt ?? 0) - (a.crawls[0]?.startedAt ?? 0),
+    );
+    return out;
   }
 }

@@ -119,6 +119,11 @@
         "command": "SafiCrawl.deleteFromTree",
         "title": "Delete…",
         "icon": "$(trash)"
+      },
+      {
+        "command": "SafiCrawl.openDomainHistory",
+        "title": "Open History",
+        "icon": "$(graph-line)"
       }
     ],
     "viewsContainers": {
@@ -159,6 +164,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "SafiCrawl.openDomainHistory",
+          "when": "view == saficrawl.sidebar && viewItem == saficrawl.domaingroup",
+          "group": "inline@1"
+        },
         {
           "command": "SafiCrawl.resumeFromTree",
           "when": "view == saficrawl.sidebar && viewItem =~ /resumable/",
