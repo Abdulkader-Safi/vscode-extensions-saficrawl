@@ -102,7 +102,10 @@ async function main() {
     sourcesContent: false,
     platform: "node",
     outfile: "dist/extension.js",
-    external: ["vscode", "sql.js", "playwright"],
+    // Only "vscode" (provided by the host) and "playwright" (resolved from
+    // the user's own install at runtime) stay external. Everything else —
+    // including sql.js — must be bundled or it won't exist in the .vsix.
+    external: ["vscode", "playwright"],
     logLevel: "silent",
     plugins: [esbuildProblemMatcherPlugin, copyAssetsPlugin],
   });

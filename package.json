@@ -3,7 +3,7 @@
   "displayName": "SafiCrawl",
   "description": "In-editor website crawler and SEO auditing tool for VS Code.",
   "version": "1.0.0",
-  "publisher": "Abdulkader Safi",
+  "publisher": "abdulkadersafi",
   "license": "MIT",
   "icon": "img/logo.png",
   "engines": {
