@@ -46,12 +46,31 @@ const COLUMNS: Column<CwvMessageRow>[] = [
   {
     id: "perf",
     header: "Perf",
-    width: 72,
-    render: (r) => (
-      <span className="font-mono tabular-nums">
-        {formatPerf(r.performance)}
-      </span>
-    ),
+    width: 84,
+    render: (r) => {
+      if (r.performance === null && r.error === null) {
+        return (
+          <span
+            className="font-mono text-[color:var(--color-sc-text-faint)]"
+            title="Queued — PageSpeed hasn't run yet"
+          >
+            queued
+          </span>
+        );
+      }
+      if (r.error !== null) {
+        return (
+          <span className="font-mono text-[color:var(--color-sc-err)]" title={r.error}>
+            error
+          </span>
+        );
+      }
+      return (
+        <span className="font-mono tabular-nums">
+          {formatPerf(r.performance)}
+        </span>
+      );
+    },
     sortBy: (r) => r.performance,
   },
   {

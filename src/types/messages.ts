@@ -73,7 +73,13 @@ export type HostToWebview =
   | { type: "url:batch"; rows: UrlRow[] }
   | { type: "issue:batch"; rows: IssueRow[] }
   | { type: "link:batch"; rows: LinkRow[] }
-  | { type: "crawl:started"; baseUrl: string; crawlId: number | null }
+  | {
+      type: "crawl:started";
+      baseUrl: string;
+      crawlId: number | null;
+      canResume: boolean;
+      canContinue: boolean;
+    }
   | { type: "crawl:done"; stats: CrawlStats }
   | { type: "crawl:error"; message: string }
   | { type: "settings:loaded"; settings: Record<string, unknown> }
@@ -96,6 +102,7 @@ export type WebviewToHost =
   | { type: "crawl:pauseResume" }
   | { type: "crawl:load"; id: number }
   | { type: "crawl:resume"; id: number }
+  | { type: "crawl:continue" }
   | { type: "crawl:archive"; id: number }
   | { type: "crawl:delete"; id: number }
   | { type: "settings:get" }

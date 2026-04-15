@@ -23,8 +23,15 @@ export const URL_COLUMNS: Column<UrlRow>[] = [
   {
     id: "status",
     header: "Status",
-    width: 70,
-    render: (r) => <span className={"font-mono " + statusClass(r.statusCode)}>{r.statusCode ?? "\u2014"}</span>,
+    width: 84,
+    render: (r) =>
+      r.statusCode === null ? (
+        <span className="font-mono text-[color:var(--color-sc-text-faint)]" title="Queued — not crawled yet">
+          pending
+        </span>
+      ) : (
+        <span className={"font-mono " + statusClass(r.statusCode)}>{r.statusCode}</span>
+      ),
     sortBy: (r) => r.statusCode,
   },
   {

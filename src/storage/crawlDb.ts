@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CrawlerConfig } from "../engine/types";
 import type { IssueRow, LinkRow, UrlRow } from "../types/messages";
-import type { CwvRow } from "../pagespeed/types";
+import type { CwvRow, PsiStrategy } from "../pagespeed/types";
 
 export type StoredStatus =
   | "running"
@@ -27,6 +27,7 @@ export interface StoredCrawl {
   issueCount: number;
   errorCount: number;
   pagespeedCount: number;
+  psiStrategies: PsiStrategy[];
 }
 
 export interface ResumeCheckpoint {
@@ -140,6 +141,10 @@ export class CrawlDb {
         "ALTER TABLE crawl_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 1;",
       );
     }
+    const crawlCols = tableColumns(db, "crawls");
+    if (!crawlCols.includes("psi_strategies_json")) {
+      db.run("ALTER TABLE crawls ADD COLUMN psi_strategies_json TEXT");
+    }
     return new CrawlDb(db, dbPath);
   }
 
@@ -180,14 +185,31 @@ export class CrawlDb {
     this.persistDirty = false;
   }
 
-  createCrawl(baseUrl: string, config: CrawlerConfig): number {
+  createCrawl(
+    baseUrl: string,
+    config: CrawlerConfig,
+    psiStrategies: PsiStrategy[] = [],
+  ): number {
     this.db.run(
-      `INSERT INTO crawls (base_url, status, config_json, started_at) VALUES (?, 'running', ?, ?)`,
-      [baseUrl, JSON.stringify(config), Date.now()],
+      `INSERT INTO crawls (base_url, status, config_json, psi_strategies_json, started_at) VALUES (?, 'running', ?, ?, ?)`,
+      [
+        baseUrl,
+        JSON.stringify(config),
+        JSON.stringify(psiStrategies),
+        Date.now(),
+      ],
     );
     const id = this.scalarNumber(`SELECT last_insert_rowid() AS id`);
     this.schedulePersist();
     return id;
+  }
+
+  setPsiStrategies(id: number, psiStrategies: PsiStrategy[]): void {
+    this.db.run(`UPDATE crawls SET psi_strategies_json = ? WHERE id = ?`, [
+      JSON.stringify(psiStrategies),
+      id,
+    ]);
+    this.schedulePersist();
   }
 
   setStatus(id: number, status: StoredStatus, canResume: boolean): void {
@@ -549,7 +571,34 @@ export class CrawlDb {
   }
 }
 
+function tableColumns(db: Database, table: string): string[] {
+  const stmt = db.prepare(`PRAGMA table_info(${table})`);
+  const out: string[] = [];
+  try {
+    while (stmt.step()) {
+      out.push(String((stmt.getAsObject() as { name?: string }).name ?? ""));
+    }
+  } finally {
+    stmt.free();
+  }
+  return out;
+}
+
 function rowToCrawl(row: Record<string, unknown>): StoredCrawl {
+  let psiStrategies: PsiStrategy[] = [];
+  const raw = row.psi_strategies_json;
+  if (typeof raw === "string" && raw.length > 0) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        psiStrategies = parsed.filter(
+          (s): s is PsiStrategy => s === "mobile" || s === "desktop",
+        );
+      }
+    } catch {
+      // ignore malformed value
+    }
+  }
   return {
     id: Number(row.id),
     baseUrl: String(row.base_url),
@@ -570,6 +619,7 @@ function rowToCrawl(row: Record<string, unknown>): StoredCrawl {
     issueCount: Number(row.issue_count),
     errorCount: Number(row.error_count),
     pagespeedCount: Number(row.pagespeed_count),
+    psiStrategies,
   };
 }
 

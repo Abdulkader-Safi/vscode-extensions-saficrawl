@@ -53,6 +53,8 @@ interface State {
   issues: IssueRow[];
   stats: CrawlStats;
   baseUrl: string | null;
+  crawlId: number | null;
+  canContinue: boolean;
   env: EnvState | null;
   settings: Record<string, unknown>;
   activeTab: TabId;
@@ -70,6 +72,7 @@ interface Actions {
   startCrawl(url: string): void;
   stopCrawl(): void;
   pauseResume(): void;
+  continueCrawl(): void;
   setPageSpeedKey(): void;
   clearPageSpeedKey(): void;
   openPlaywrightDocs(): void;
@@ -82,6 +85,8 @@ export const useStore = create<State & Actions>((set) => ({
   issues: [],
   stats: IDLE_STATS,
   baseUrl: null,
+  crawlId: null,
+  canContinue: false,
   env: null,
   settings: {},
   activeTab: "overview",
@@ -106,6 +111,8 @@ export const useStore = create<State & Actions>((set) => ({
         case "crawl:started":
           return {
             baseUrl: msg.baseUrl,
+            crawlId: msg.crawlId,
+            canContinue: msg.canContinue,
             urls: [],
             links: [],
             issues: [],
@@ -118,7 +125,22 @@ export const useStore = create<State & Actions>((set) => ({
         case "crawl:error":
           return {};
         case "url:batch": {
-          const next = state.urls.concat(msg.rows);
+          // Merge-by-URL so pending rows seeded from the sitemap get replaced
+          // (not duplicated) when the crawler finishes each URL.
+          const next = state.urls.slice();
+          const index = new Map<string, number>();
+          for (let i = 0; i < next.length; i++) {
+            index.set(next[i].url, i);
+          }
+          for (const row of msg.rows) {
+            const existing = index.get(row.url);
+            if (existing !== undefined) {
+              next[existing] = row;
+            } else {
+              index.set(row.url, next.length);
+              next.push(row);
+            }
+          }
           return {
             urls:
               next.length > MAX_URLS
@@ -179,6 +201,7 @@ export const useStore = create<State & Actions>((set) => ({
   startCrawl: (url) => send({ type: "crawl:start", url }),
   stopCrawl: () => send({ type: "crawl:stop" }),
   pauseResume: () => send({ type: "crawl:pauseResume" }),
+  continueCrawl: () => send({ type: "crawl:continue" }),
   setPageSpeedKey: () => send({ type: "setPageSpeedKey" }),
   clearPageSpeedKey: () => send({ type: "clearPageSpeedKey" }),
   openPlaywrightDocs: () => send({ type: "openPlaywrightDocs" }),

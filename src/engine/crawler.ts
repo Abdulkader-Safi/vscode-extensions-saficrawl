@@ -109,6 +109,8 @@ export class Crawler extends CrawlerEvents {
       }
     }
 
+    this.emit("queue:seeded", { urls: this.seededUrls() });
+
     this.startedAt = Date.now();
     this.status = "running";
     this.startStatsTicker();
@@ -205,6 +207,8 @@ export class Crawler extends CrawlerEvents {
       }
     }
 
+    this.emit("queue:seeded", { urls: this.seededUrls() });
+
     this.startedAt = Date.now();
     this.status = "running";
     this.startStatsTicker();
@@ -221,6 +225,30 @@ export class Crawler extends CrawlerEvents {
       this.status = this.stopSignal ? "completed" : "completed";
       this.emit("done", this.snapshot());
     }
+  }
+
+  private seededUrls(): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const [u] of this.p0Queue) {
+      if (!seen.has(u)) {
+        seen.add(u);
+        out.push(u);
+      }
+    }
+    for (const [u] of this.p1Queue) {
+      if (!seen.has(u)) {
+        seen.add(u);
+        out.push(u);
+      }
+    }
+    for (const u of this.visited) {
+      if (!seen.has(u)) {
+        seen.add(u);
+        out.push(u);
+      }
+    }
+    return out;
   }
 
   private resumeInternal(): void {

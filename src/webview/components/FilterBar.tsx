@@ -10,6 +10,8 @@ export const FilterBar: React.FC = () => {
   const startCrawl = useStore((s) => s.startCrawl);
   const stopCrawl = useStore((s) => s.stopCrawl);
   const pauseResume = useStore((s) => s.pauseResume);
+  const continueCrawl = useStore((s) => s.continueCrawl);
+  const canContinue = useStore((s) => s.canContinue);
   const [url, setUrl] = useState<string>("https://example.com");
 
   const isActive = stats.status === "running" || stats.status === "paused";
@@ -52,6 +54,15 @@ export const FilterBar: React.FC = () => {
           </>
         ) : (
           <>
+            {canContinue ? (
+              <button
+                onClick={continueCrawl}
+                className="px-2 py-1 text-xs font-medium text-white rounded bg-[color:var(--color-sc-accent)] hover:bg-[color:var(--color-sc-accent-hover)]"
+                title="Resume crawling and PageSpeed from where this crawl stopped"
+              >
+                Continue crawl
+              </button>
+            ) : null}
             <input
               type="text"
               value={url}

@@ -118,6 +118,13 @@ export async function activate(
           notify("error", err instanceof Error ? err.message : String(err));
         }
         break;
+      case "crawl:continue":
+        try {
+          await controller.continueCurrent();
+        } catch (err) {
+          notify("error", err instanceof Error ? err.message : String(err));
+        }
+        break;
       case "crawl:archive":
         controller.archive(msg.id);
         break;

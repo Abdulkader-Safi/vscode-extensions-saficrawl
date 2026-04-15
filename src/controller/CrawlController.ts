@@ -58,6 +58,9 @@ export class CrawlController {
   private pagespeedRows: CwvRow[] = [];
   private psiWorker: PsiWorker | null = null;
   private psiTotalExpected = 0;
+  private psiOwnerCrawlId: number | null = null;
+  private psiStrategies: PsiStrategy[] = [];
+  private canContinueCurrent = false;
 
   private readonly jsRenderedByUrl = new Map<string, boolean>();
   private onCrawlsChanged: (() => void) | null = null;
@@ -103,6 +106,8 @@ export class CrawlController {
         type: "crawl:started",
         baseUrl: this.baseUrl,
         crawlId: this.crawlId,
+        canResume: this.canContinueCurrent,
+        canContinue: this.canContinueCurrent,
       });
     }
     const urls = this.urlBuf.snapshot();
@@ -116,6 +121,12 @@ export class CrawlController {
     const links = this.linkBuf.snapshot();
     if (links.length) {
       bus.post({ type: "link:batch", rows: links });
+    }
+    if (this.pagespeedRows.length > 0) {
+      bus.post({
+        type: "pagespeed:batch",
+        rows: this.pagespeedRows.map((r) => ({ ...r })),
+      });
     }
     bus.post({ type: "stats:tick", stats: this.lastStats });
   }
@@ -131,11 +142,14 @@ export class CrawlController {
     this.config = readConfig(this.getWsConfig());
     this.reset();
     this.baseUrl = seedUrl;
-    this.crawlId = this.db?.createCrawl(seedUrl, this.config) ?? null;
+    const strategies = this.resolveConfiguredStrategies();
+    this.crawlId =
+      this.db?.createCrawl(seedUrl, this.config, strategies) ?? null;
+    this.canContinueCurrent = false;
     this.notifyCrawlsChanged();
 
     this.jsRenderer = await this.tryCreateRenderer();
-    await this.maybeCreatePsiWorker();
+    await this.maybeCreatePsiWorker(strategies);
 
     const crawler = new Crawler({
       config: this.config,
@@ -148,6 +162,8 @@ export class CrawlController {
       type: "crawl:started",
       baseUrl: seedUrl,
       crawlId: this.crawlId,
+      canResume: false,
+      canContinue: false,
     });
     this.startFlushTimer();
 
@@ -179,6 +195,7 @@ export class CrawlController {
     this.reset();
     this.baseUrl = loaded.crawl.baseUrl;
     this.crawlId = id;
+    this.psiStrategies = loaded.crawl.psiStrategies;
     this.urlBuf.pushMany(loaded.urls);
     this.linkBuf.pushMany(loaded.links);
     this.issueBuf.pushMany(loaded.issues);
@@ -206,6 +223,7 @@ export class CrawlController {
             ? "error"
             : "idle",
     };
+    this.canContinueCurrent = this.computeCanContinue(loaded);
 
     const bus = this.getBus();
     if (bus) {
@@ -213,6 +231,8 @@ export class CrawlController {
         type: "crawl:started",
         baseUrl: loaded.crawl.baseUrl,
         crawlId: id,
+        canResume: loaded.crawl.canResume,
+        canContinue: this.canContinueCurrent,
       });
       bus.post({ type: "url:batch", rows: loaded.urls });
       bus.post({ type: "issue:batch", rows: loaded.issues });
@@ -228,6 +248,41 @@ export class CrawlController {
     return loaded;
   }
 
+  /** Resume whichever crawl the webview is currently showing. */
+  async continueCurrent(): Promise<void> {
+    if (this.crawlId === null) {
+      throw new Error("No crawl is currently loaded.");
+    }
+    await this.resume(this.crawlId);
+  }
+
+  /**
+   * Decide whether the "Continue crawl" button should be offered. True when
+   * the HTML queue has remnants OR any crawled URL still lacks a PSI row for
+   * one of the strategies this crawl was started with.
+   */
+  private computeCanContinue(loaded: LoadedCrawl): boolean {
+    if (loaded.crawl.canResume) {
+      return true;
+    }
+    const strategies = loaded.crawl.psiStrategies;
+    if (strategies.length === 0) {
+      return false;
+    }
+    const done = new Set(loaded.pagespeed.map((r) => `${r.url}|${r.strategy}`));
+    for (const u of loaded.urls) {
+      if (u.statusCode === null || u.statusCode < 200 || u.statusCode >= 400) {
+        continue;
+      }
+      for (const s of strategies) {
+        if (!done.has(`${u.url}|${s}`)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   async resume(id: number): Promise<void> {
     if (!this.db) {
       throw new Error("Persistence is not enabled");
@@ -236,7 +291,8 @@ export class CrawlController {
     if (!loaded) {
       throw new Error(`Crawl ${id} not found`);
     }
-    if (!loaded.crawl.canResume) {
+    const hasContinue = this.computeCanContinue(loaded);
+    if (!hasContinue) {
       throw new Error(`Crawl ${id} cannot be resumed`);
     }
     if (
@@ -251,12 +307,12 @@ export class CrawlController {
     this.reset();
     this.baseUrl = loaded.crawl.baseUrl;
     this.crawlId = id;
+    this.canContinueCurrent = false;
 
     // Hydrate buffers so the webview reflects prior state immediately.
     this.urlBuf.pushMany(loaded.urls);
     this.linkBuf.pushMany(loaded.links);
     this.issueBuf.pushMany(loaded.issues);
-    this.pagespeedRows = loaded.pagespeed.slice();
     for (const issue of loaded.issues) {
       this.issuesByUrl.set(
         issue.url,
@@ -265,6 +321,20 @@ export class CrawlController {
     }
 
     this.jsRenderer = await this.tryCreateRenderer();
+
+    // Prefer the strategies this crawl originally used. Fall back to the
+    // current workspace setting if nothing was persisted (older crawls).
+    const strategies =
+      loaded.crawl.psiStrategies.length > 0
+        ? loaded.crawl.psiStrategies
+        : this.resolveConfiguredStrategies();
+    // Populate pagespeedRows BEFORE creating the worker so the worker's
+    // closure captures the correct array to push new results into.
+    this.pagespeedRows = loaded.pagespeed.slice();
+    await this.maybeCreatePsiWorker(strategies);
+    if (this.db) {
+      this.db.setPsiStrategies(id, strategies);
+    }
 
     const crawler = new Crawler({
       config: this.config,
@@ -285,7 +355,17 @@ export class CrawlController {
       type: "crawl:started",
       baseUrl: loaded.crawl.baseUrl,
       crawlId: id,
+      canResume: false,
+      canContinue: false,
     });
+    // Restore the historical rows into the webview; the new merge-by-URL store
+    // replaces them in-place as the crawl + PSI fill each row in.
+    this.getBus()?.post({ type: "url:batch", rows: loaded.urls });
+    this.getBus()?.post({ type: "issue:batch", rows: loaded.issues });
+    this.getBus()?.post({ type: "link:batch", rows: loaded.links });
+    // Seed the PSI grid: already-done rows replay + missing ones show pending,
+    // and the PsiWorker gets the missing URLs so it picks up where it left off.
+    this.seedResumePsi(loaded, strategies);
     this.startFlushTimer();
 
     crawler
@@ -301,6 +381,43 @@ export class CrawlController {
       .finally(() => {
         void this.closeRenderer();
       });
+  }
+
+  private seedResumePsi(loaded: LoadedCrawl, strategies: PsiStrategy[]): void {
+    if (strategies.length === 0) {
+      return;
+    }
+    // Replay the PSI rows we already have so the grid reflects prior progress.
+    if (loaded.pagespeed.length > 0) {
+      this.getBus()?.post({
+        type: "pagespeed:batch",
+        rows: loaded.pagespeed.map((r) => ({ ...r })),
+      });
+    }
+    const done = new Set(loaded.pagespeed.map((r) => `${r.url}|${r.strategy}`));
+    const pendingRows: CwvRow[] = [];
+    const toEnqueue = new Set<string>();
+    for (const u of loaded.urls) {
+      if (u.statusCode === null || u.statusCode < 200 || u.statusCode >= 400) {
+        continue;
+      }
+      for (const s of strategies) {
+        if (done.has(`${u.url}|${s}`)) {
+          continue;
+        }
+        pendingRows.push(pendingPsiRow(u.url, s));
+        toEnqueue.add(u.url);
+      }
+    }
+    if (pendingRows.length > 0 && this.crawlId === this.psiOwnerCrawlId) {
+      this.getBus()?.post({ type: "pagespeed:batch", rows: pendingRows });
+    }
+    if (this.psiWorker) {
+      for (const url of toEnqueue) {
+        this.psiTotalExpected++;
+        this.psiWorker.enqueue(url);
+      }
+    }
   }
 
   archive(id: number): void {
@@ -430,6 +547,7 @@ export class CrawlController {
     c.on("issue:found", (i) => this.onIssue(i));
     c.on("link:found", (l) => this.onLink(l));
     c.on("stats:tick", (s) => this.onStats(s));
+    c.on("queue:seeded", ({ urls }) => this.onQueueSeeded(urls));
     c.on("error", ({ url, error }) => {
       const row: IssueRow = {
         url,
@@ -441,6 +559,71 @@ export class CrawlController {
       this.pendingIssues.push(row);
     });
     c.on("done", (s) => this.onDone(s));
+  }
+
+  /**
+   * When sitemap discovery finishes, pre-populate the webview with a pending
+   * row for every URL that will be crawled (+ pending PSI rows for each
+   * configured strategy). Rows carry null metrics and get replaced in-place
+   * as the crawl fills them in.
+   */
+  private onQueueSeeded(urls: string[]): void {
+    const bus = this.getBus();
+    const pendingUrlRows: UrlRow[] = [];
+    const alreadyKnown = new Set<string>();
+    for (const row of this.urlBuf.snapshot()) {
+      alreadyKnown.add(row.url);
+    }
+    for (const url of urls) {
+      if (alreadyKnown.has(url)) {
+        continue;
+      }
+      alreadyKnown.add(url);
+      pendingUrlRows.push({
+        url,
+        statusCode: null,
+        title: null,
+        wordCount: null,
+        loadTimeMs: null,
+        issueCount: 0,
+        depth: 0,
+        internal: true,
+      });
+    }
+    if (pendingUrlRows.length > 0) {
+      this.urlBuf.pushMany(pendingUrlRows);
+      flushInChunks(pendingUrlRows, BATCH_SIZE, (chunk) =>
+        bus?.post({ type: "url:batch", rows: chunk }),
+      );
+      if (this.db && this.crawlId !== null) {
+        try {
+          this.db.saveUrls(this.crawlId, pendingUrlRows, this.jsRenderedByUrl);
+        } catch (err) {
+          this.logDbError("saveUrls (pending)", err);
+        }
+      }
+    }
+    if (
+      this.psiWorker &&
+      this.psiStrategies.length > 0 &&
+      this.crawlId === this.psiOwnerCrawlId
+    ) {
+      const pendingPsiRows: CwvRow[] = [];
+      const alreadyDone = new Set(
+        this.pagespeedRows.map((r) => `${r.url}|${r.strategy}`),
+      );
+      for (const url of urls) {
+        for (const s of this.psiStrategies) {
+          if (alreadyDone.has(`${url}|${s}`)) {
+            continue;
+          }
+          pendingPsiRows.push(pendingPsiRow(url, s));
+        }
+      }
+      if (pendingPsiRows.length > 0) {
+        bus?.post({ type: "pagespeed:batch", rows: pendingPsiRows });
+      }
+    }
   }
 
   private onUrl(result: CrawlResult): void {
@@ -526,13 +709,15 @@ export class CrawlController {
     if (this.db && this.crawlId !== null && this.crawler) {
       const checkpoint = this.crawler.getCheckpoint();
       const pendingRemains = checkpoint.queue.length > 0;
+      const psiRemaining = this.countPsiRemaining();
+      const canResumeNow = pendingRemains || psiRemaining > 0;
       try {
         this.db.saveQueue(this.crawlId, checkpoint.queue);
         this.db.saveCheckpoint(this.crawlId, checkpoint);
         this.db.setStatus(
           this.crawlId,
           pendingRemains ? "interrupted" : "completed",
-          pendingRemains,
+          canResumeNow,
         );
       } catch (err) {
         this.logDbError("finalize", err);
@@ -543,14 +728,61 @@ export class CrawlController {
     void this.drainPsiWorker();
   }
 
-  /** Create the streaming PSI worker before the crawl starts, if enabled + key configured. */
-  private async maybeCreatePsiWorker(): Promise<void> {
-    this.psiWorker = null;
-    this.psiTotalExpected = 0;
+  /**
+   * How many url × strategy PSI cells still have no saved result. Used when
+   * finalising so a crawl whose HTML is complete but PSI still in-flight can
+   * be resumed by the user.
+   */
+  private countPsiRemaining(): number {
+    if (this.psiStrategies.length === 0) {
+      return 0;
+    }
+    const done = new Set(
+      this.pagespeedRows.map((r) => `${r.url}|${r.strategy}`),
+    );
+    let missing = 0;
+    for (const row of this.urlBuf.snapshot()) {
+      if (
+        row.statusCode === null ||
+        row.statusCode < 200 ||
+        row.statusCode >= 400
+      ) {
+        continue;
+      }
+      for (const s of this.psiStrategies) {
+        if (!done.has(`${row.url}|${s}`)) {
+          missing++;
+        }
+      }
+    }
+    return missing;
+  }
+
+  /** Resolve the current workspace setting for PSI strategies. */
+  private resolveConfiguredStrategies(): PsiStrategy[] {
     const cfg = this.getWsConfig();
     if (!cfg.get<boolean>("pagespeed.enabled")) {
+      return [];
+    }
+    const choice = cfg.get<string>("pagespeed.strategy") ?? "mobile";
+    if (choice === "both") {
+      return ["mobile", "desktop"];
+    }
+    if (choice === "desktop") {
+      return ["desktop"];
+    }
+    return ["mobile"];
+  }
+
+  /** Create the streaming PSI worker before the crawl starts, if enabled + key configured. */
+  private async maybeCreatePsiWorker(strategies: PsiStrategy[]): Promise<void> {
+    this.psiWorker = null;
+    this.psiTotalExpected = 0;
+    this.psiStrategies = strategies;
+    if (strategies.length === 0) {
       return;
     }
+    const cfg = this.getWsConfig();
     const key = await this.getPsiKey();
     if (!key) {
       void vscode.window.showWarningMessage(
@@ -558,29 +790,28 @@ export class CrawlController {
       );
       return;
     }
-    const strategyChoice = cfg.get<string>("pagespeed.strategy") ?? "mobile";
-    const strategies: PsiStrategy[] =
-      strategyChoice === "both"
-        ? ["mobile", "desktop"]
-        : strategyChoice === "desktop"
-          ? ["desktop"]
-          : ["mobile"];
     const concurrency = cfg.get<number>("pagespeed.concurrency") ?? 2;
-
-    this.pagespeedRows = [];
+    // Capture the owner crawl + its rows array so late PSI callbacks never
+    // leak into a different crawl that the user may have loaded in the UI.
+    const ownerCrawlId = this.crawlId;
+    const ownerRows = this.pagespeedRows;
+    this.psiOwnerCrawlId = ownerCrawlId;
     this.psiWorker = new PsiWorker({
       apiKey: key,
       strategies,
       concurrency,
       onResult: (row) => {
-        this.pagespeedRows.push(row);
-        this.getBus()?.post({ type: "pagespeed:batch", rows: [row] });
-        if (this.db && this.crawlId !== null) {
+        ownerRows.push(row);
+        if (this.db && ownerCrawlId !== null) {
           try {
-            this.db.savePageSpeed(this.crawlId, [row]);
+            this.db.savePageSpeed(ownerCrawlId, [row]);
           } catch (err) {
             this.logDbError("savePageSpeed", err);
           }
+        }
+        // Only stream to the webview if the user is still viewing this crawl.
+        if (this.crawlId === ownerCrawlId) {
+          this.getBus()?.post({ type: "pagespeed:batch", rows: [row] });
         }
       },
       onAbort: (reason) => {
@@ -595,13 +826,18 @@ export class CrawlController {
     if (!worker) {
       return;
     }
+    const ownerCrawlId = this.psiOwnerCrawlId;
     const summary = await worker.drain();
     this.psiWorker = null;
-    this.getBus()?.post({
-      type: "pagespeed:done",
-      analyzed: summary.analyzed,
-      skipped: summary.skipped,
-    });
+    this.psiOwnerCrawlId = null;
+    // Only notify the webview if the owner crawl is still the one on screen.
+    if (this.crawlId === ownerCrawlId) {
+      this.getBus()?.post({
+        type: "pagespeed:done",
+        analyzed: summary.analyzed,
+        skipped: summary.skipped,
+      });
+    }
     if (!summary.aborted) {
       void vscode.window.showInformationMessage(
         `SafiCrawl: PageSpeed analyzed ${summary.analyzed} URL(s), skipped ${summary.skipped}.`,
@@ -692,9 +928,26 @@ export class CrawlController {
     this.issuesByUrl.clear();
     this.jsRenderedByUrl.clear();
     this.pagespeedRows = [];
+    this.psiStrategies = [];
+    this.canContinueCurrent = false;
     this.lastStats = makeIdleStats();
     this.lastWebviewStatsAt = 0;
   }
+}
+
+function pendingPsiRow(url: string, strategy: PsiStrategy): CwvRow {
+  return {
+    url,
+    strategy,
+    performance: null,
+    lcpMs: null,
+    clsScore: null,
+    fcpMs: null,
+    inpMs: null,
+    ttfbMs: null,
+    tbtMs: null,
+    error: null,
+  };
 }
 
 function toUrlRow(r: CrawlResult, issueCount: number): UrlRow {
